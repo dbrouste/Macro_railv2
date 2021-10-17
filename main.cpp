@@ -17,26 +17,30 @@ BluetoothSerial ESP_BT;
 #define MS2 27
 #define EN  25
 
-int progress = 0;
-
 // Parameters
 char commande = '0';
-char value = '0';
+char valuechar = '0';
+int value = 0;
 int currentPosition = 1000000;
-int startPosition = currentPosition;
-int endPosition = currentPosition;
+int startPosition = currentPosition-1;
+int endPosition = currentPosition+1;
 float StepperMinDegree = 1.8; // pas mimimum du moteur en degree
 int StepperAngleDiv = 8; //1 2 4 ou 8
+int CurrentDriverResolution = StepperAngleDiv;
 int thread_size = 700; //in um. M3 = 600 M4 = 700 M5 = 800
 int CameraSteps = 20; // in um, lenght between focal plane
 int attente = 1000; // Attente avant photo (en ms)
 bool direction = 1;
 unsigned long lastmillis;
+float lensAperture = 2.8;
+int progress = 0;
 
 // Sony function
 volatile int counter;
 const char* ssid     = "DIRECT-CeE0:ILCE-7RM2";
-const char* password = "9E8EqQDV";     // your WPA2 password
+const char* ssid2     = "DIRECT-mgE0:ILCE-6300";
+const char* password = "9E8EqQDV";     // your WPA2 password. Get it on Sony camera (connect with password procedure)
+const char* password2 = "qXb1X35h";
 const char* host = "192.168.122.1";   // fixed IP of camera
 const int httpPort = 8080;
 char JSON_1[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"getVersions\",\"params\":[]}";
@@ -50,15 +54,15 @@ char JSON_5[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"actTakePicture\",\"p
 //char JSON_9[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setFNumber\",\"params\":[\"5.6\"]}";
 //char JSON_10[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setShutterSpeed\",\"params\":[\"1/200\"]}";
 //char JSON_11[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setIsoSpeedRate\",\"params\":[]}";
-//char JSON_6[]="{\"method\":\"getEvent\",\"params\":[true],\"id\":1,\"version\":\"1.0\"}";
-//char JSON_3[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"startLiveview\",\"params\":[]}";
-//char JSON_4[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"stopLiveview\",\"params\":[]}";
+//char JSON_12[]="{\"method\":\"getEvent\",\"params\":[true],\"id\":1,\"version\":\"1.0\"}";
+char JSON_13[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"startLiveview\",\"params\":[]}";
+//char JSON_14[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"stopLiveview\",\"params\":[]}";
 WiFiClient client;
 
 
-void SetMagnification(int val)
+void SetMagnification(int magnification,float aperture)
 {
-  CameraSteps = (int) 2.2*2.8*2.8/(val*val);
+  CameraSteps = (int) 2.2*aperture*aperture*(magnification+1)*(magnification+1)/(magnification*magnification);  //https://www.zerenesystems.com/cms/stacker/docs/tables/macromicrodof
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -87,13 +91,15 @@ void httpPost(char* jString) {
     //SerialBT.println(httpPort);
   }
   // We now create a URI for the request
-  String url = "/sony/camera/";
- 
+  //String url = "/sony/camera/";
+  String url = "/sony/camera";
   //SerialBT.print("Requesting URL: ");
   //SerialBT.println(url);
  
   // This will send the request to the server
-  client.print(String("POST " + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"));
+  
+  // client.print(String("POST " + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n")); ///A7R2
+  client.print(String("POST " + url + " HTTP/1.1\r\n")); ///A6300
   client.println("Content-Type: application/json");
   client.print("Content-Length: ");
   client.println(strlen(jString));
@@ -118,17 +124,20 @@ void httpPost(char* jString) {
 
 int ConnectCamera()
 {
-  WiFi.begin(ssid, password);
+  Serial.println(WiFi.status());
+  WiFi.begin(ssid2, password2);
   while (WiFi.status() != WL_CONNECTED) {   // wait for WiFi connection
     delay(500);
-    //SerialBT.print(".");
+    //Serial.print(".");
+    Serial.println(WiFi.status());
   }
-  //SerialBT.println("");
-  //SerialBT.println("WiFi connected");
-  //SerialBT.println("IP address: ");
-  //SerialBT.println(WiFi.localIP());
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
   httpPost(JSON_1);  // initial connect to camera
   httpPost(JSON_2); // startRecMode
+  httpPost(JSON_13); //startLiveview  - in this mode change camera settings  (skip to speedup operation)
   //httpPost(JSON_3);  //startLiveview  - in this mode change camera settings  (skip to speedup operation)
   return 1;
 }
@@ -160,6 +169,8 @@ void resetEDPins()
 
 void ResolutionMoteur(int Resolution)
 {
+  CurrentDriverResolution = Resolution; //Set the stepper driver resolution/divider
+
   if (Resolution == 8) {
     digitalWrite(MS1, HIGH); //Pull MS1, and MS2 high to set logic to 1/8th microstep resolution
     digitalWrite(MS2, HIGH);
@@ -181,8 +192,9 @@ void ResolutionMoteur(int Resolution)
 int ConvDistStep(int distance)//Convert dist (1um unity) to steps
 {
   int PasCalc = 0;
-  PasCalc = distance*360*StepperAngleDiv/(thread_size*StepperMinDegree);
+  PasCalc = (int) distance*360*CurrentDriverResolution/(thread_size*StepperMinDegree);
   if (PasCalc<1) {PasCalc = 1;}
+  Serial.println("ConvDistStep ");Serial.println(PasCalc);
   return PasCalc;
 }
 
@@ -197,9 +209,13 @@ void TurnMotor(int Step)
     digitalWrite(stp,LOW); //Pull step pin low so it can be triggered again
     delay(1);
     if (direction)
-      {currentPosition++;}
+      {currentPosition = currentPosition+8/CurrentDriverResolution;
+      //Serial.println("currentPosition ");Serial.println(currentPosition);
+      }
     else
-      {currentPosition--;}
+      {currentPosition = currentPosition-8/CurrentDriverResolution;
+      //Serial.println("currentPosition ");Serial.println(currentPosition);
+      }
   }
 }
 
@@ -236,6 +252,8 @@ int Recule(int val)
 
 int Move(int val)
 {
+  Serial.print("Move val ");Serial.println(val);
+  ResolutionMoteur(1);
   switch (val) {
       case 1:  
         Avance(ConvDistStep(100));  //0.1mm
@@ -247,11 +265,13 @@ int Move(int val)
         Avance(ConvDistStep(10000));  //10mm
         break;
   }
+  ResolutionMoteur(StepperAngleDiv);
   return 1;
 }
 
 int MoveNeg(int val)
 {
+  ResolutionMoteur(1);
     switch (val) {
       case 1:  
         Recule(ConvDistStep(100));  //0.1mm
@@ -263,33 +283,50 @@ int MoveNeg(int val)
         Recule(ConvDistStep(10000));  //10mm
         break;
   }
+  ResolutionMoteur(StepperAngleDiv);
   return 1;
 }
 
 void GoTo(int val)
 {
   int diff = val-currentPosition;
+  Serial.println("Diff ");Serial.println(diff);
   if (diff>0)
   {
     Avance(diff);
   }
   else
   {
-    Recule(diff);
+    Recule(abs(diff));
   }
+}
+
+void GoToStartEnd(int val)
+{
+  if (val==0) 
+  {
+    GoTo(startPosition);}
+  else 
+  {
+    GoTo(endPosition);}
 }
 
 void GoToCamera(int val)
 {
   int diff = val-currentPosition;
+  int PictureNumber = (int) diff/CameraSteps;
+  Serial.print("DiffCamera");Serial.println(diff);
+  Serial.print("PictureNumber");Serial.println(PictureNumber);
+  
   direction = 1;
   digitalWrite(dir, LOW); //Pull direction pin low to move "forward"
 
-  for (int x=0;x<=diff/CameraSteps;x++)
+  for (int x=0;x<=PictureNumber;x++)
   {
-    progress = x*100*CameraSteps/diff;
-    ESP_BT.write(progress);
+    progress = x*100*PictureNumber;
+    ESP_BT.write(progress); //update progress on the phone
     delay(attente);
+    Serial.println("Take picture");
     TakePicture();
     TurnMotor(ConvDistStep(CameraSteps));
   }
@@ -297,7 +334,9 @@ void GoToCamera(int val)
 
 int Start()
 {
+  Serial.println("GoToStart");
   GoTo(startPosition);
+  Serial.println("GoCamera");
   GoToCamera(endPosition);
   return 1;
 }
@@ -309,8 +348,11 @@ int Stop()
 
 int StartStop(int val)
 {
+  Serial.print("StartStop ");Serial.println(val);
   if (val==0) 
-  {return Start(); }
+  {
+    int i = Start();
+    return i; }
   else 
   {return Stop();}
 }
@@ -333,9 +375,10 @@ void setup() {
   pinMode(MS1, OUTPUT);
   pinMode(MS2, OUTPUT);
   pinMode(EN, OUTPUT);
-  ResolutionMoteur(StepperAngleDiv);
   resetEDPins(); //Set step, direction, microstep and enable pins to default states
-  Serial.begin(19200);
+  ResolutionMoteur(StepperAngleDiv);
+  SetMagnification(5,2.8); //mag,aperture
+  Serial.begin(115200);
   ESP_BT.begin("ESP32_Rail"); //Name of your Bluetooth interface -> will show up on your phone
 }
 
@@ -344,24 +387,28 @@ void loop() {
   // -------------------- Receive Bluetooth signal ----------------------
   while (ESP_BT.available()) 
   {
-    // separate button ID from button value -> button ID is 10, 20, 30, etc, value is 1 or 0
-    commande = (char) ESP_BT.read();
-    value = (int) ESP_BT.read();
-  }
 
+    commande = (char) ESP_BT.read();
+    delay(10);
+    valuechar = ESP_BT.read();
+    value = valuechar - '0'; //conv ASCII char to int
+    Serial.print("commande ");Serial.print(commande);Serial.print(" value ");Serial.println(value);
 
     switch (commande) {
       case 'A':  
+        Serial.println("Start");
         StartStop(value);
         break;
       case 'B':  
-        GoTo(value);
+        Serial.println("GotoStartEnd");Serial.println(value);  
+        GoToStartEnd(value);
         break;
       case 'C':  
         DefinePos(value);
         break;
-      case 'D':  
+      case 'D':
         Move(value);
+        Serial.println("Movex");
         break;
       case 'E':  
         MoveNeg(value);
@@ -370,8 +417,14 @@ void loop() {
         ConnectCamera();
         break;
       case 'G':  
-        SetMagnification(value);
+        SetMagnification(value,lensAperture);
         break;
-
+      case 'Z':
+        break;
     }
+    commande = 'Z';
+  }
+
+
+
 }
