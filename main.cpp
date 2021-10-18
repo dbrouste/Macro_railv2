@@ -324,7 +324,8 @@ void GoToCamera(int val)
 
   for (int x=0;x<=PictureNumber;x++)
   {
-    progress = x*100*PictureNumber;
+    progress = x*100/PictureNumber;
+    Serial.print("Progress ");Serial.println(progress);
     ESP_BT.write(progress); //update progress on the phone
     delay(attente);
     Serial.println("Take picture");
@@ -393,7 +394,7 @@ void loop() {
     delay(10);
     valuechar = ESP_BT.read();
     value = valuechar - '0'; //conv ASCII char to int
-    Serial.print("commande ");Serial.print(commande);Serial.print(" value ");Serial.println(value);
+    //Serial.print("commande ");Serial.print(commande);Serial.print(" value ");Serial.println(value);
 
     switch (commande) {
       case 'A':  
