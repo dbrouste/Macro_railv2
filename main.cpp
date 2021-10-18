@@ -314,6 +314,7 @@ void GoToStartEnd(int val)
 void GoToCamera(int val)
 {
   int diff = val-currentPosition;
+  if (diff<0) {return;}
   int PictureNumber = (int) diff/CameraSteps;
   Serial.print("DiffCamera");Serial.println(diff);
   Serial.print("PictureNumber");Serial.println(PictureNumber);
