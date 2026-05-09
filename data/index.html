@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Macro Rail Setup</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --surface-color: #1e1e1e;
+            --primary-color: #bb86fc;
+            --primary-variant: #3700b3;
+            --secondary-color: #03dac6;
+            --error-color: #cf6679;
+            --text-color: #e1e1e1;
+            --text-muted: #888;
+            --border-radius: 8px;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background-color: var(--surface-color);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--primary-color);
+            margin-top: 0;
+        }
+
+        .status-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: #2c2c2c;
+            padding: 15px;
+            border-radius: var(--border-radius);
+            margin-bottom: 20px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: var(--error-color);
+            margin-right: 8px;
+        }
+
+        .status-indicator.connected {
+            background-color: var(--secondary-color);
+        }
+
+        .btn {
+            background-color: #333;
+            color: var(--text-color);
+            border: 1px solid #555;
+            padding: 10px 15px;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            font-weight: bold;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .btn:hover {
+            background-color: #444;
+        }
+
+        .btn:active {
+            transform: scale(0.98);
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: #000;
+            border: none;
+        }
+
+        .btn-primary:hover {
+            background-color: #d1abfd;
+        }
+
+        .btn-danger {
+            background-color: var(--error-color);
+            color: #000;
+            border: none;
+        }
+
+        .btn-danger:hover {
+            background-color: #e58797;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .panel {
+            background-color: #252525;
+            padding: 15px;
+            border-radius: var(--border-radius);
+            margin-bottom: 20px;
+        }
+
+        .panel h2 {
+            font-size: 16px;
+            color: var(--text-muted);
+            margin-top: 0;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #444;
+            padding-bottom: 5px;
+        }
+
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .telemetry-item {
+            background-color: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        .telemetry-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 5px;
+        }
+
+        .telemetry-value {
+            font-size: 20px;
+            font-weight: bold;
+            color: var(--secondary-color);
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        input[type=range] {
+            flex-grow: 1;
+            accent-color: var(--primary-color);
+        }
+        
+        .value-display {
+            min-width: 40px;
+            text-align: right;
+            font-weight: bold;
+        }
+
+        .logs {
+            font-family: monospace;
+            background: #000;
+            color: #0f0;
+            padding: 10px;
+            height: 100px;
+            overflow-y: auto;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Macro Rail Control</h1>
+
+    <div class="status-panel">
+        <div>
+            <span class="status-indicator" id="bleStatusLight"></span>
+            <span id="bleStatusText">BLE Disconnected</span>
+        </div>
+        <button id="btnConnectBLE" class="btn btn-primary">Connect BLE</button>
+    </div>
+
+    <div class="panel">
+        <h2>Camera Control (Sony)</h2>
+        <div class="grid-3">
+            <button id="btnConnectSony" class="btn btn-primary" onclick="sendCommand('F0')">Connect Sony</button>
+            <button id="btnDisconnectSony" class="btn" onclick="sendCommand('H0')">Disconnect</button>
+            <button id="btnTakePicture" class="btn" onclick="sendCommand('J0')">Take Picture</button>
+        </div>
+        <p style="font-size: 12px; color: var(--error-color);">* Connecting to Sony will disable the ESP32 setup WiFi. Keep this page open!</p>
+        
+        <div class="control-group" style="margin-top: 15px;">
+            <div class="telemetry-label">Camera WiFi Password</div>
+            <div class="slider-container">
+                <input type="text" id="cameraPassword" placeholder="Enter password..." style="flex-grow: 1; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;">
+                <button class="btn" onclick="sendPassword()">Save</button>
+            </div>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">Saves permanently to ESP32 internal memory.</p>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Movement Control</h2>
+        <div class="control-group">
+            <div class="telemetry-label">Magnification</div>
+            <div class="slider-container">
+                <input type="range" id="magSlider" min="1" max="20" step="0.5" value="10" oninput="updateMagDisplay(this.value)" onchange="sendMagnification(this.value)">
+                <div class="value-display" id="magValue">10x</div>
+            </div>
+        </div>
+        
+        <div class="telemetry-label" style="margin-top: 15px;">Backward (-)</div>
+        <div class="grid-3">
+            <button class="btn" onclick="sendCommand('E3')">-10 mm</button>
+            <button class="btn" onclick="sendCommand('E2')">-1 mm</button>
+            <button class="btn" onclick="sendCommand('E1')">-0.1 mm</button>
+        </div>
+
+        <div class="telemetry-label">Forward (+)</div>
+        <div class="grid-3">
+            <button class="btn" onclick="sendCommand('D3')">+10 mm</button>
+            <button class="btn" onclick="sendCommand('D2')">+1 mm</button>
+            <button class="btn" onclick="sendCommand('D1')">+0.1 mm</button>
+        </div>
+
+        <div class="grid-2" style="margin-top: 20px;">
+            <button class="btn" onclick="sendCommand('C0')">Set Start Pos</button>
+            <button class="btn" onclick="sendCommand('C1')">Set End Pos</button>
+        </div>
+        <div class="grid-2">
+            <button class="btn" onclick="sendCommand('B0')">Go to Start</button>
+            <button class="btn" onclick="sendCommand('B1')">Go to End</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Execution</h2>
+        <div class="grid-2">
+            <button class="btn btn-primary" onclick="sendCommand('A0')">START STACK</button>
+            <button class="btn btn-danger" onclick="sendCommand('A1')">STOP</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Telemetry</h2>
+        <div class="telemetry-grid">
+            <div class="telemetry-item">
+                <div class="telemetry-label">Progress</div>
+                <div class="telemetry-value" id="valProgress">0%</div>
+            </div>
+            <div class="telemetry-item">
+                <div class="telemetry-label">Step Size (um)</div>
+                <div class="telemetry-value" id="valSteps">0</div>
+            </div>
+            <div class="telemetry-item">
+                <div class="telemetry-label">Est. Time Left (s)</div>
+                <div class="telemetry-value" id="valEstTime">0</div>
+            </div>
+            <div class="telemetry-item">
+                <div class="telemetry-label">Current Time (s)</div>
+                <div class="telemetry-value" id="valCurTime">0</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="logs" id="logWindow">System ready.<br></div>
+
+</div>
+
+<script>
+    // BLE Configuration
+    const bleDeviceName = 'ESP32_Rail';
+    // Match random UUIDs to be generated in ESP32 firmware
+    const bleServiceUUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+    const bleRxUUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+    const bleTxUUID = '1ccecade-7d72-46cb-8dc5-523e1e92ebdb';
+
+    let bleDevice = null;
+    let bleServer = null;
+    let bleService = null;
+    let rxCharacteristic = null;
+    let txCharacteristic = null;
+
+    const btnConnectBLE = document.getElementById('btnConnectBLE');
+    const bleStatusLight = document.getElementById('bleStatusLight');
+    const bleStatusText = document.getElementById('bleStatusText');
+    const logWindow = document.getElementById('logWindow');
+
+    function log(msg) {
+        console.log(msg);
+        logWindow.innerHTML += msg + '<br>';
+        logWindow.scrollTop = logWindow.scrollHeight;
+    }
+
+    function updateMagDisplay(val) {
+        document.getElementById('magValue').innerText = val + 'x';
+    }
+
+    function sendMagnification(val) {
+        let v = Math.round(val);
+        if (v > 20) v = 20;
+        if (v < 1) v = 1;
+        sendCommand('G' + v);
+    }
+
+    function sendPassword() {
+        let pwd = document.getElementById('cameraPassword').value;
+        if (pwd.length > 0) {
+            sendCommand('P' + pwd);
+            log('Sent new password to ESP32');
+        } else {
+            log('Password cannot be empty');
+        }
+    }
+
+    btnConnectBLE.addEventListener('click', () => {
+        if (bleDevice && bleDevice.gatt.connected) {
+            bleDevice.gatt.disconnect();
+        } else {
+            connectBLE();
+        }
+    });
+
+    async function connectBLE() {
+        if (!navigator.bluetooth) {
+            let msg = 'Web Bluetooth is blocked by the browser on non-HTTPS sites (like http://192.168.4.1).\n\nTo fix this in Chrome:\n1. Type this in the URL bar: chrome://flags/#unsafely-treat-insecure-origin-as-secure\n2. Add "http://192.168.4.1" to the text box.\n3. Select "Enabled" from the dropdown.\n4. Click "Relaunch" at the bottom right.';
+            log('Error: Web Bluetooth API is missing (Secure Context limitation).');
+            log('Go to chrome://flags/#unsafely-treat-insecure-origin-as-secure and add http://192.168.4.1');
+            alert(msg);
+            return;
+        }
+
+        try {
+            log('Requesting Bluetooth Device...');
+            bleDevice = await navigator.bluetooth.requestDevice({
+                filters: [{ name: bleDeviceName }],
+                optionalServices: [bleServiceUUID]
+            });
+
+            bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+            log('Connecting to GATT Server...');
+            bleServer = await bleDevice.gatt.connect();
+
+            log('Getting Service...');
+            bleService = await bleServer.getPrimaryService(bleServiceUUID);
+
+            log('Getting RX Characteristic...');
+            rxCharacteristic = await bleService.getCharacteristic(bleRxUUID);
+
+            log('Getting TX Characteristic...');
+            txCharacteristic = await bleService.getCharacteristic(bleTxUUID);
+
+            log('Starting Notifications...');
+            await txCharacteristic.startNotifications();
+            txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+            bleStatusLight.classList.add('connected');
+            bleStatusText.innerText = 'BLE Connected';
+            btnConnectBLE.innerText = 'Disconnect BLE';
+            log('BLE Ready!');
+
+        } catch (error) {
+            log('Error: ' + error);
+        }
+    }
+
+    function onDisconnected() {
+        log('BLE Disconnected.');
+        bleStatusLight.classList.remove('connected');
+        bleStatusText.innerText = 'BLE Disconnected';
+        btnConnectBLE.innerText = 'Connect BLE';
+    }
+
+    function handleNotifications(event) {
+        let value = new TextDecoder().decode(event.target.value);
+        
+        if (value.startsWith('L#')) {
+            log(value.substring(2));
+            return;
+        }
+        
+        // Format: progress#CameraSteps#EstimatedTime#CurrentTime
+        // SendParameter: stringToSend = progress + stringOne  + CameraSteps + stringOne + EstimatedTime + stringOne +CurrentTime;
+        // e.g., 5#200#50#10 (where stringOne is "#")
+        let parts = value.split('#');
+        if (parts.length >= 4) {
+            document.getElementById('valProgress').innerText = parts[0] + '%';
+            document.getElementById('valSteps').innerText = parts[1];
+            // Estimated time is in ms usually, let's divide by 1000
+            let estTimeS = Math.round(parseInt(parts[2]) / 1000);
+            let curTimeS = Math.round(parseInt(parts[3]) / 1000);
+            document.getElementById('valEstTime').innerText = estTimeS;
+            document.getElementById('valCurTime').innerText = curTimeS;
+        }
+    }
+
+    async function sendCommand(cmd) {
+        if (!rxCharacteristic) {
+            log('Error: BLE not connected');
+            return;
+        }
+        try {
+            log('Sending: ' + cmd);
+            let encoder = new TextEncoder();
+            await rxCharacteristic.writeValue(encoder.encode(cmd));
+        } catch (error) {
+            log('Send Error: ' + error);
+        }
+    }
+</script>
+
+</body>
+</html>

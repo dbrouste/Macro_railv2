@@ -1,0 +1,6 @@
+{
+    "clangd.arguments": [
+        "--compile-commands-dir=c:/Users/damien/Documents/Antigravity/Rail macro/Macro_railv2/.cache/clangd",
+        "--query-driver=C:/Users/damien/.platformio/packages/toolchain-*/bin/*,C:/Users/damien/.platformio/packages/tool-*/bin/*"
+    ]
+}

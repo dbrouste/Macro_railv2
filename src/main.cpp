@@ -1,14 +1,33 @@
 // board_build.partitions = huge_app.csv
 // monitor_speed = 115200
+// board_build.filesystem = littlefs
 // --------------------------------------------------
 
-// this header is needed for Bluetooth Serial -> works ONLY on ESP32
-#include "BluetoothSerial.h" 
 #include "Arduino.h"
 #include <WiFi.h>
+#include <NimBLEDevice.h>
+#include <WebServer.h>
+#include <LittleFS.h>
+#include <Preferences.h>
 
-// init Class:
-BluetoothSerial ESP_BT; 
+// BLE UUIDs
+#define SERVICE_UUID           "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID_RX "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define CHARACTERISTIC_UUID_TX "1ccecade-7d72-46cb-8dc5-523e1e92ebdb"
+
+BLEServer *pServer = NULL;
+BLECharacteristic * pTxCharacteristic;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+
+Preferences preferences;
+
+WebServer server(80);
+
+// Command queue (from BLE callback to main loop)
+volatile char pendingCommand = 'Z';
+volatile int pendingValue = 0;
+String pendingPassword = "";
 
 // init PINs: assign any pin on ESP32
 #define stp 17
@@ -35,7 +54,7 @@ unsigned long lastmillis;
 float lensAperture = 3.5;
 int progress = 0;
 bool InvertSide = 1;  //If motor is moving in the wrong direction
-int Magnification = 7.5;
+int Magnification = 10;
 
 
 // Sony function
@@ -43,7 +62,7 @@ volatile int counter;
 const char* ssid     = "DIRECT-CeE0:ILCE-7RM2";
 const char* ssid2     = "DIRECT-mgE0:ILCE-6300";
 const char* password = "9E8EqQDV";     // your WPA2 password. Get it on Sony camera (connect with password procedure)
-const char* password2 = "qXb1X35h";
+char cameraPassword[64] = "qXb1X35h";
 const char* host = "192.168.122.1";   // fixed IP of camera
 const int httpPort = 8080;
 char JSON_1[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"getVersions\",\"params\":[]}";
@@ -51,13 +70,8 @@ char JSON_2[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"startRecMode\",\"par
 char JSON_3[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"startBulbShooting\",\"params\":[]}";
 char JSON_4[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"stopBulbShooting\",\"params\":[]}";
 char JSON_5[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"actTakePicture\",\"params\":[]}";
-//char JSON_6[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"actHalfPressShutter\",\"params\":[]}";
-//char JSON_7[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"cancelHalfPressShutter\",\"params\":[]}";
-//char JSON_8[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setSelfTimer\",\"params\":[2]}";
-//char JSON_9[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setFNumber\",\"params\":[\"5.6\"]}";
 char JSON_10[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setShutterSpeed\",\"params\":[\"1/160\"]}";
 char JSON_11[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"setIsoSpeedRate\",\"params\":[\"100\"]}";
-//char JSON_12[]="{\"method\":\"getEvent\",\"params\":[true],\"id\":1,\"version\":\"1.0\"}";
 char JSON_13[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"startLiveview\",\"params\":[]}";
 char JSON_14[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"stopLiveview\",\"params\":[]}";
 char JSON_15[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"getSupportedIsoSpeedRate\",\"params\":[]}";
@@ -67,100 +81,153 @@ char JSON_18[] = "{\"version\":\"1.0\",\"id\":1,\"method\":\"getAvailableApiList
 
 WiFiClient client;
 
+// BLE Callbacks
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+    };
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+    }
+};
+
+class MyCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string rxValue = pCharacteristic->getValue();
+      if (rxValue.length() > 0) {
+        Serial.print("Received BLE Value: ");
+        for (int i = 0; i < rxValue.length(); i++) {
+          Serial.print(rxValue[i]);
+        }
+        Serial.println();
+
+        char cmd = rxValue[0];
+        String payload = String(rxValue.c_str()).substring(1);
+        
+        if (cmd == 'P') {
+            pendingPassword = payload;
+            pendingCommand = 'P';
+        } else {
+            pendingValue = payload.toInt();
+            pendingCommand = cmd;
+        }
+      }
+    }
+};
+
+
 void SendParameter(int progress,int CameraSteps, int EstimatedTime, int CurrentTime)
 {
-  String stringOne, stringToSend;
-  stringOne = String();
-  stringToSend = String();
-  stringOne = "#";
-  stringToSend = progress + stringOne  + CameraSteps + stringOne + EstimatedTime + stringOne +CurrentTime;
-  ESP_BT.println(stringToSend);
+  String stringToSend = String(progress) + "#"  + String(CameraSteps) + "#" + String(EstimatedTime) + "#" + String(CurrentTime);
+  // Send via BLE notification
+  if (deviceConnected && pTxCharacteristic) {
+      pTxCharacteristic->setValue((uint8_t*)stringToSend.c_str(), stringToSend.length());
+      pTxCharacteristic->notify();
+  }
+}
+
+void SendLog(String message) {
+  String stringToSend = "L#" + message;
+  if (deviceConnected && pTxCharacteristic) {
+      pTxCharacteristic->setValue((uint8_t*)stringToSend.c_str(), stringToSend.length());
+      pTxCharacteristic->notify();
+  }
 }
 
 void SetMagnification(int magnification,float aperture)
 {
   CameraSteps = (int) 2.2*aperture*aperture*(magnification+1)*(magnification+1)/(3*magnification*magnification);  //https://www.zerenesystems.com/cms/stacker/docs/tables/macromicrodof   reduced by 3 to get better result
-
   SendParameter(0,CameraSteps,0,0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////                   Sony                                  ///////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
+void stopSetupWifi() {
+  Serial.println("Stopping AP and WebServer...");
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  delay(100);
+}
 
 void httpPost(char* jString) {
-  //SerialBT.print("connecting to ");
-  //SerialBT.println(host);
   if (!client.connect(host, httpPort)) {
-    //SerialBT.println("connection failed");
     return;
   }
-  else {
-    //SerialBT.print("connected to ");
-    //SerialBT.print(host);
-    //SerialBT.print(":");
-    //SerialBT.println(httpPort);
-  }
-  // We now create a URI for the request
-  //String url = "/sony/camera/";
   String url = "/sony/camera";
-  //SerialBT.print("Requesting URL: ");
-  //SerialBT.println(url);
- 
-  // This will send the request to the server
   
-  // client.print(String("POST " + url + " HTTP/1.1\r\n" + "Host: " + host + "\r\n")); ///A7R2
   client.print(String("POST " + url + " HTTP/1.1\r\n")); ///A6300
   client.println("Content-Type: application/json");
   client.print("Content-Length: ");
   client.println(strlen(jString));
-  // End of headers
   client.println();
-  // Request body
   client.println(jString);
-  //SerialBT.println("wait for data");
   lastmillis = millis();
   while (!client.available() && millis() - lastmillis < 8000) {} // wait 8s max for answer
  
-  // Read all the lines of the reply from server and print them to Serial
   while (client.available()) {
     String line = client.readStringUntil('\r');
     Serial.println(line);
   }
-  //SerialBT.println();
-  //SerialBT.println("----closing connection----");
-  //SerialBT.println();
   client.stop();
 }
 
 int ConnectCamera()
 {
-  Serial.println(WiFi.status());
-  WiFi.disconnect();
-  WiFi.begin(ssid2, password2);
-  while (WiFi.status() != WL_CONNECTED) {   // wait for WiFi connection
-    delay(500);
-    //Serial.print(".");
-    Serial.println(WiFi.status());
+  stopSetupWifi(); // Transition from Setup AP to STA mode
+  
+  SendLog("Scanning for Sony camera...");
+  int n = WiFi.scanNetworks();
+  String targetSSID = "";
+  
+  if (n == 0) {
+    Serial.println("No networks found");
+    SendLog("No networks found.");
+    return 0;
+  } else {
+    for (int i = 0; i < n; ++i) {
+      if (WiFi.SSID(i).indexOf("ILCE") >= 0) {
+        targetSSID = WiFi.SSID(i);
+        break;
+      }
+    }
   }
+  
+  if (targetSSID == "") {
+    Serial.println("No Sony ILCE camera found.");
+    SendLog("No Sony camera found.");
+    return 0;
+  }
+  
+  Serial.println(WiFi.status());
+  SendLog("Connecting to " + targetSSID + "...");
+  WiFi.begin(targetSSID.c_str(), cameraPassword);
+  
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < 20) {   // wait 10s max
+    delay(500);
+    Serial.println(WiFi.status());
+    timeout++;
+  }
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Failed to connect to WiFi! Wrong password?");
+    SendLog("Failed to connect. Wrong password?");
+    return 0;
+  }
+  
   Serial.println("");
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
+  SendLog("WiFi connected! IP: " + WiFi.localIP().toString());
+  
   httpPost(JSON_1);  // initial connect to camera
   httpPost(JSON_2); // startRecMode
-
-  //httpPost(JSON_13); //startLiveview  - in this mode change camera settings  (skip to speedup operation)
-  //httpPost(JSON_10);
-  //httpPost(JSON_11);
+  SendLog("Sony Camera Ready!");
   return 1;
 }
 
@@ -168,12 +235,12 @@ int DisconnectCamera()
 {
   Serial.println(WiFi.status());
   WiFi.disconnect();
+  SendLog("Disconnected from camera.");
   return 1;
 }
 
 int StopLiveView()
 {
-
   httpPost(JSON_14);
   return 1;
 }
@@ -184,16 +251,9 @@ void TakePicture()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////                   Motor                                 ///////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//Reset Easy Driver pins to default states
 void resetEDPins()
 {
   digitalWrite(stp, LOW);
@@ -247,20 +307,13 @@ void TurnMotor(int Step)
     delay(1);
     if (direction)
       {currentPosition = currentPosition-8/CurrentDriverResolution;
-      //Serial.println("currentPosition ");Serial.println(currentPosition);
       }
     else
       {
       currentPosition = currentPosition+8/CurrentDriverResolution;
-      //Serial.println("currentPosition ");Serial.println(currentPosition);
       }
   }
 }
-
-
-
-
-
 
 int DefinePos(int val)
 {
@@ -396,7 +449,6 @@ int Stop()
 
 int StartStop(int val)
 {
-  //Serial.print("StartStop ");Serial.println(val);
   if (val==0) 
   {
     int i = Start();
@@ -407,16 +459,8 @@ int StartStop(int val)
     return Stop();}
 }
 
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////                   Setup+Loop                            ///////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void setup() {
@@ -428,47 +472,89 @@ void setup() {
   resetEDPins(); //Set step, direction, microstep and enable pins to default states
   ResolutionMoteur(StepperAngleDiv);
   SetMagnification(Magnification,lensAperture); //mag,aperture
+  
+  preferences.begin("rail_app", false);
+  String savedPass = preferences.getString("sony_pass", "qXb1X35h");
+  savedPass.toCharArray(cameraPassword, 64);
+
   Serial.begin(115200);
-  ESP_BT.begin("ESP32_Rail"); //Name of your Bluetooth interface -> will show up on your phone
+  Serial.println("Starting Macro Rail System");
+
+  // Init LittleFS
+  if(!LittleFS.begin(true)){
+    Serial.println("An Error has occurred while mounting LittleFS");
+  }
+
+  // Init WiFi AP
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("ESP32_Rail_Setup");
+  Serial.println("AP started: ESP32_Rail_Setup / 192.168.4.1");
+
+  // Init WebServer
+  server.serveStatic("/", LittleFS, "/index.html");
+  server.begin();
+  Serial.println("Web Server Started");
+
+  // Init NimBLE
+  NimBLEDevice::init("ESP32_Rail");
+  pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // RX Characteristic
+  BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
+                       CHARACTERISTIC_UUID_RX,
+                       NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+                     );
+  pRxCharacteristic->setCallbacks(new MyCallbacks());
+
+  // TX Characteristic
+  pTxCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID_TX,
+                      NIMBLE_PROPERTY::NOTIFY
+                    );
+
+  pService->start();
+  
+  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->start();
+  Serial.println("BLE Advertising Started");
 }
 
-void loop() {
-  
-  // -------------------- Receive Bluetooth signal ----------------------
-  while (ESP_BT.available()) 
-  {
+void processCommand(char cmd, int val) {
+    if (cmd == 'P') {
+      Serial.print("Saving new password: "); Serial.println(pendingPassword);
+      pendingPassword.toCharArray(cameraPassword, 64);
+      preferences.putString("sony_pass", pendingPassword);
+      return;
+    }
 
-    commande = (char) ESP_BT.read();
-    delay(10);
-    valuechar = ESP_BT.read();
-    value = valuechar - '0'; //conv ASCII char to int
-    if (commande !='Z') 
-    {Serial.print("commande ");Serial.print(commande);Serial.print(" value ");Serial.println(value);}
-
-    switch (commande) {
+    if (cmd != 'Z') {
+      Serial.print("commande ");Serial.print(cmd);Serial.print(" value ");Serial.println(val);
+    }
+    switch (cmd) {
       case 'A':  
-        //Serial.println("Start");
-        StartStop(value);
+        StartStop(val);
         break;
       case 'B':  
-        //Serial.println("GotoStartEnd");Serial.println(value);  
-        GoToStartEnd(value);
+        GoToStartEnd(val);
         break;
       case 'C':  
-        DefinePos(value);
+        DefinePos(val);
         break;
       case 'D':
-        Move(value);
-        //Serial.println("Movex");
+        Move(val);
         break;
       case 'E':  
-        MoveNeg(value);
+        MoveNeg(val);
         break;
       case 'F':  
         ConnectCamera();
         break;
       case 'G':  
-        SetMagnification(value,lensAperture);
+        SetMagnification(val,lensAperture);
         break;
       case 'H':  
         DisconnectCamera();
@@ -479,10 +565,26 @@ void loop() {
       case 'K':  
         httpPost(JSON_18);
         break;
-        
-      case 'Z':
-        break;
     }
-    commande = 'Z';
+}
+
+void loop() {
+  server.handleClient(); // Handle HTTP requests if active
+
+  // Handle BLE connection state
+  if (!deviceConnected && oldDeviceConnected) {
+      delay(500); // give the bluetooth stack the chance to get things ready
+      pServer->startAdvertising(); // restart advertising
+      Serial.println("BLE start advertising");
+      oldDeviceConnected = deviceConnected;
+  }
+  if (deviceConnected && !oldDeviceConnected) {
+      oldDeviceConnected = deviceConnected;
+  }
+
+  // Handle pending commands from BLE
+  if (pendingCommand != 'Z') {
+    processCommand(pendingCommand, pendingValue);
+    pendingCommand = 'Z';
   }
 }
