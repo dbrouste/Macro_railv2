@@ -163,7 +163,7 @@ void SetMagnification(float magnification, float aperture) {
                    magnification)); // https://www.zerenesystems.com/cms/stacker/docs/tables/macromicrodof
                                     // reduced by 3 to get better result
   int diff = abs(endPosition - startPosition);
-  int TotalPictures = diff / ConvDistStep(CameraSteps);
+  int TotalPictures = diff / ConvDistStep(CameraSteps) + 1;
   SendParameter(0, CameraSteps, 0, 0, TotalPictures);
 }
 
@@ -475,15 +475,16 @@ void GoToCamera(int val) {
 
     int CurrentTimeMs = millis() - startTime;
     int EstimatedTimeMs = 0;
+    int photosRemaining = PictureNumber + 1 - x;
     if (x > 0) {
       unsigned long avgTimePerPhoto = CurrentTimeMs / x;
-      EstimatedTimeMs = avgTimePerPhoto * (PictureNumber - x);
+      EstimatedTimeMs = avgTimePerPhoto * photosRemaining;
     } else {
-      EstimatedTimeMs = PictureNumber * (attente + 1);
+      EstimatedTimeMs = photosRemaining * (attente + 2000); // 2000ms added for typical camera processing
     }
 
     SendParameter(progress, CameraSteps, EstimatedTimeMs, CurrentTimeMs,
-                  PictureNumber);
+                  PictureNumber + 1);
 
     delay(attente);
 
@@ -596,7 +597,8 @@ void setup() {
         HTTPUpload &upload = server.upload();
         if (upload.status == UPLOAD_FILE_START) {
           Serial.printf("Update: %s\n", upload.filename.c_str());
-          if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          int cmd = (upload.filename.indexOf("littlefs") > -1 || upload.filename.indexOf("spiffs") > -1) ? U_SPIFFS : U_FLASH;
+          if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
             Update.printError(Serial);
           }
         } else if (upload.status == UPLOAD_FILE_WRITE) {
