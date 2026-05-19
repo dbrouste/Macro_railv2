@@ -488,13 +488,19 @@ void GoToCamera(int val) {
 
     delay(attente);
 
-    // Check camera connection before taking picture
-    bool isConnected = false;
+    // Send request directly to avoid double-connection penalty
+    bool requestSent = false;
     unsigned long waitStart = millis();
-    while (!isConnected) {
+    while (!requestSent) {
       if (client.connect(host, httpPort)) {
-        client.stop();
-        isConnected = true;
+        String url = "/sony/camera";
+        client.print(String("POST " + url + " HTTP/1.1\r\n"));
+        client.println("Content-Type: application/json");
+        client.print("Content-Length: ");
+        client.println(strlen(JSON_5));
+        client.println();
+        client.println(JSON_5);
+        requestSent = true;
       } else {
         if (millis() - waitStart > 120000) { // 2 minutes timeout
           SendLog("Camera timeout. Aborting stack.");
@@ -506,11 +512,26 @@ void GoToCamera(int val) {
     }
 
     Serial.println("Take picture");
-    TakePicture();
-    delay(100);
+    
+    // The camera triggers the shutter very quickly, but takes seconds to save to SD card.
+    // Wait a fixed safe margin (800ms) to ensure the shutter has closed, 
+    // then move the rail WHILE the camera is busy saving the file!
+    delay(800); 
+
     if (x < PictureNumber) {
       TurnMotor(ConvDistStep(CameraSteps));
     }
+
+    // Wait for the camera to finish its processing and send the HTTP response
+    unsigned long startT = millis();
+    while (!client.available() && millis() - startT < 8000) {
+    }
+
+    // Clear the incoming buffer
+    while (client.available()) {
+      client.readStringUntil('\r');
+    }
+    client.stop();
   }
 }
 
