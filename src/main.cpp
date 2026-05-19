@@ -361,6 +361,12 @@ void TurnMotor(int Step) {
   digitalWrite(EN, LOW);
 
   for (x = 0; x < Step; x++) {
+    if (pendingCommand == 'A' && pendingValue == 1) {
+      SendLog("Motor movement stopped by user.");
+      pendingCommand = 'Z';
+      break;
+    }
+    
     digitalWrite(stp, HIGH); // Trigger one step forward
     delay(1);
     digitalWrite(stp, LOW); // Pull step pin low so it can be triggered again
@@ -476,6 +482,12 @@ void GoToCamera(int val) {
   unsigned long lastMotorMoveTime = millis(); // Track when the motor last stopped moving
 
   for (int x = 0; x <= PictureNumber; x++) {
+    if (pendingCommand == 'A' && pendingValue == 1) {
+      SendLog("Stack stopped by user.");
+      pendingCommand = 'Z';
+      return;
+    }
+
     progress = x * 100 / PictureNumber;
 
     int CurrentTimeMs = millis() - startTime;
@@ -499,12 +511,24 @@ void GoToCamera(int val) {
     // If the camera took longer to save the photo than the stabilization time, 
     // waitTarget will be in the past, and we won't wait at all (zero delay)!
     while (millis() < waitTarget) {
+      if (pendingCommand == 'A' && pendingValue == 1) {
+        SendLog("Stack stopped by user.");
+        pendingCommand = 'Z';
+        return;
+      }
+      
       if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
         SendLog("Camera WiFi lost! Pausing stack...");
         unsigned long lostTime = millis();
         
         bool reconnected = false;
         while (!reconnected) {
+          if (pendingCommand == 'A' && pendingValue == 1) {
+            SendLog("Stack stopped by user.");
+            pendingCommand = 'Z';
+            return;
+          }
+          
           if (millis() - lostTime > 120000) { // 2 minutes timeout
             SendLog("Camera timeout. Aborting stack.");
             return;
@@ -566,6 +590,13 @@ void GoToCamera(int val) {
     // Wait for the camera to finish its processing and send the HTTP response
     unsigned long startT = millis();
     while (!client.available() && millis() - startT < 8000) {
+      if (pendingCommand == 'A' && pendingValue == 1) {
+        SendLog("Stack stopped by user.");
+        pendingCommand = 'Z';
+        client.stop();
+        return;
+      }
+      delay(10);
     }
 
     // Clear the incoming buffer
