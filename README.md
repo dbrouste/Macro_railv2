@@ -1,59 +1,76 @@
-# ESP32 Macro Rail Control (Hybrid WiFi + BLE)
+# ESP32 Macro Photography Rail Controller
 
-Ce projet est un contrôleur firmware pour un rail macro motorisé basé sur un **ESP32**.
-L'objectif est de piloter avec précision un moteur pas-à-pas pour la photographie macro, tout en contrôlant directement un boîtier **Sony** via WiFi Direct, le tout pilotable depuis une **interface web** hébergée localement et communicant via **Web Bluetooth**.
+A high-performance, ESP32-based automated macro photography rail controller. This project integrates seamless stepper motor control, a modern Web Bluetooth (BLE) user interface, and direct WiFi communication with Sony cameras (Sony Remote API) to fully automate focus stacking.
 
-## 🏗️ Architecture
+## Features
 
-1. **Démarrage (Mode Setup)** : L'ESP32 démarre un réseau WiFi Access Point (`ESP32_Rail_Setup`) et un serveur Web HTTP local. Il démarre en parallèle un serveur BLE (`NimBLE`).
-2. **Interface Utilisateur** : Le téléphone se connecte au WiFi de l'ESP32. L'interface Web est chargée depuis `http://192.168.4.1`.
-3. **Contrôle BLE** : Depuis la page web, on initie une connexion Web Bluetooth vers l'ESP32. Toutes les commandes moteur et statuts passent désormais par cette connexion BLE rapide et basse latence.
-4. **Connexion Appareil Photo (Sony)** : Lorsqu'on déclenche la connexion à l'appareil photo, l'ESP32 éteint proprement son WiFi AP/Serveur Web, et bascule en mode Client (STA) pour se connecter au réseau WiFi Direct du boîtier Sony. L'interface Web (déjà chargée sur le téléphone) reste active et continue de piloter l'ESP32 via le BLE resté connecté.
+- **Precision Stepper Control**: Moves the camera rail with micrometer precision. Supports micro-stepping configuration (1/8th by default).
+- **Automated Focus Stacking**: Calculates the exact depth of field and step size required based on your lens's Magnification and Aperture (or Numerical Aperture).
+- **Direct Sony Camera Integration**: 
+  - Connects directly to the Sony camera's WiFi access point (e.g., ILCE-7RM2, ILCE-6300).
+  - Automatically configures the camera for stacking (sets minimum ISO).
+  - Triggers the shutter via the Sony Remote API.
+- **Ultra-Optimized Timing**: Overlaps the rail movement with the camera's internal processing/SD-card save time, reducing the delay between shots to just ~0.8s.
+- **Robust Connection Handling**: If the camera turns off or the WiFi connection drops during a stack, the ESP32 automatically pauses the sequence and resumes flawlessly once the camera is reconnected.
+- **Modern Web Interface**: 
+  - Hosted directly on the ESP32 via LittleFS.
+  - Uses Web Bluetooth (BLE) to communicate with the ESP32, allowing control from any modern browser (Chrome/Edge on PC, Android, or Mac) without needing a native app.
+  - Real-time telemetry: Progress bar, Elapsed Time, Estimated Time of Arrival (ETA), and Total Photos.
+- **OTA Updates**: Supports Over-The-Air firmware and filesystem updates via PlatformIO or through the hidden `/update` web page.
 
-## 🛠️ Pré-requis et Dépendances
+## Hardware Requirements
 
-Le projet utilise **PlatformIO** et le framework Arduino.
-* **Environnement** : `esp32doit-devkit-v1`
-* **Système de fichiers** : `LittleFS`
-* **Bibliothèques externes** : `h2zero/NimBLE-Arduino` (remplace le BluetoothSerial classique pour optimiser la mémoire et permettre la compatibilité iOS/WebBLE).
+- **Microcontroller**: ESP32 (e.g., DOIT ESP32 DEVKIT V1)
+- **Stepper Driver**: A4988, DRV8825, or TMC2208/2209
+- **Actuator**: A motorized macro rail (e.g., standard NEMA 17 stepper motor on a lead screw)
+- **Camera**: Sony mirrorless camera supporting the "Smart Remote Control" app / Sony Camera API.
 
----
+### Default Pinout
+| Function | ESP32 Pin |
+|----------|-----------|
+| STEP     | GPIO 16   |
+| DIR      | GPIO 4    |
+| MS1      | GPIO 18   |
+| MS2      | GPIO 27   |
+| ENABLE   | GPIO 25   |
 
-## 🚀 Protocole d'Installation (Important)
+## Software Architecture
 
-L'installation de ce firmware se fait en **deux étapes distinctes**. Le code C++ doit être flashé, mais la page Web (HTML/JS/CSS) stockée dans le dossier `data/` doit également être transférée dans la mémoire interne (LittleFS) de l'ESP32.
+1. **Backend (C++)**: 
+   - Uses `NimBLE-Arduino` for lightweight and fast Bluetooth Low Energy communication.
+   - Built on the Arduino Framework using PlatformIO.
+   - Manages motor bit-banging and non-blocking HTTP requests.
+2. **Frontend (HTML/JS/CSS)**:
+   - Stored in the `data/` folder and uploaded to the ESP32's `LittleFS` partition.
+   - Single-page application using modern dark-mode aesthetics.
+   - Connects to the ESP32 via the Web Bluetooth API.
 
-### Étape 1 : Téléversement du Code Firmware
-1. Ouvrez le projet dans VS Code avec PlatformIO.
-2. Cliquez sur l'icône de la fourmi PlatformIO 👽 dans la barre latérale gauche.
-3. Allez dans `Project Tasks` > `esp32doit-devkit-v1` > `General`.
-4. Cliquez sur **Upload**.
+## Installation & Setup
 
-### Étape 2 : Téléversement du File System (LittleFS)
-C'est ici que l'interface Web est placée dans la mémoire de l'ESP32.
-1. Toujours dans la barre latérale PlatformIO (`Project Tasks` > `esp32doit-devkit-v1`).
-2. Déroulez le menu **Platform**.
-3. Cliquez sur **Upload Filesystem Image**.
-*(Alternative en ligne de commande : `pio run --target uploadfs`)*
+1. **Clone the repository** and open the project in [PlatformIO](https://platformio.org/).
+2. **Build and Upload the Firmware**:
+   - Connect the ESP32 via USB.
+   - Click **Upload** in PlatformIO.
+3. **Upload the Web Interface**:
+   - In PlatformIO, go to the Project Tasks menu -> `esp32doit-devkit-v1` -> `Platform` -> **Upload Filesystem Image**.
+   - *Note: This is mandatory, otherwise the web interface will not load!*
+4. **Connect to the ESP32**:
+   - Power up the ESP32. It will broadcast a WiFi network named `ESP32_Rail_Setup`.
+   - Connect to this network with your phone or PC.
+   - Open a browser and navigate to `http://192.168.4.1/`.
 
-> [!WARNING]
-> Si l'Étape 2 n'est pas réalisée, le réseau WiFi sera bien créé, mais la page `http://192.168.4.1` n'affichera rien car le fichier `index.html` sera introuvable.
+## Usage Instructions
 
----
+1. Turn on your Sony camera and launch the "Smart Remote Control" app (or enable "Control with Smartphone").
+2. Open the ESP32 Web Interface (`http://192.168.4.1/`).
+3. Click the **Connect BLE** button in the web interface to establish a Bluetooth link with the rail.
+4. Input your Sony camera's WiFi password in the setup panel if it's your first time.
+5. Define your start and end positions using the movement controls.
+6. Enter your lens settings (Magnification, Aperture/NA).
+7. Click **Start**! The system will connect to the camera, configure the ISO, and execute the stack autonomously.
 
-## 📱 Utilisation
+## OTA (Over-The-Air) Updates
 
-1. **Mise sous tension** : Allumez l'ESP32. Le système initialise le moteur et ouvre son réseau.
-2. **Connexion WiFi** : Sur votre smartphone/PC, connectez-vous au réseau WiFi **`ESP32_Rail_Setup`**.
-3. **Chargement de l'interface** : Ouvrez **Google Chrome** (ou un navigateur WebBLE sur iOS) et rendez-vous sur l'adresse : `http://192.168.4.1`.
-4. **Appairage BLE** : Cliquez sur le bouton violet **"Connect BLE"** en haut de la page. Acceptez la demande d'association avec `ESP32_Rail`. Le statut passera au vert ("BLE Connected").
-5. **Mode Prise de Vue** : Pilotez le moteur (Avance/Recule, Start, End). Cliquez sur **"Connect Sony"** : l'ESP32 bascule sur le WiFi de l'appareil photo. *Note: vous perdrez la connexion internet WiFi sur votre téléphone, mais la page web doit rester ouverte pour continuer le contrôle via BLE.*
-
-## ⚙️ Hardware (Pins)
-
-Les pins par défaut (configurables dans `main.cpp`) :
-* `STEP` : GPIO 17
-* `DIR` : GPIO 4
-* `MS1` : GPIO 18
-* `MS2` : GPIO 27
-* `ENABLE` : GPIO 25
+Once the initial flash is done via USB, you can update the system wirelessly:
+- **Via PlatformIO**: Ensure your computer is connected to the `ESP32_Rail_Setup` WiFi. PlatformIO will automatically detect it and flash over WiFi.
+- **Via Web Browser**: Go to `http://192.168.4.1/update` and upload your `.bin` files (both `firmware.bin` and `littlefs.bin` are supported).

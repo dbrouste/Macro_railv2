@@ -61,6 +61,7 @@ float Magnification = 10.0;
 
 // Sony function
 volatile int counter;
+String connectedCameraSSID = "";
 const char *ssid = "DIRECT-CeE0:ILCE-7RM2";
 const char *ssid2 = "DIRECT-mgE0:ILCE-6300";
 const char *password = "9E8EqQDV"; // your WPA2 password. Get it on Sony camera
@@ -236,6 +237,7 @@ int ConnectCamera() {
 
   Serial.println(WiFi.status());
   SendLog("Connecting to " + targetSSID + "...");
+  connectedCameraSSID = targetSSID;
   WiFi.begin(targetSSID.c_str(), cameraPassword);
 
   int timeout = 0;
@@ -259,8 +261,11 @@ int ConnectCamera() {
 
   httpPost(JSON_1); // initial connect to camera
   httpPost(JSON_2); // startRecMode
+  
+  // Wait a bit for the camera to switch to record mode before requesting settings
+  delay(1500);
 
-  // Set ISO to minimum available
+  // Set ISO to minimum available (but at least 100)
   String isoResp = httpPost(JSON_15);
   int bracketIdx = isoResp.indexOf("[[");
   if (bracketIdx > 0) {
@@ -278,12 +283,15 @@ int ConnectCamera() {
       if (firstDigitIdx >= 0) {
         int endNumIdx = arrayContent.indexOf("\"", firstDigitIdx);
         if (endNumIdx > firstDigitIdx) {
-          String minIso = arrayContent.substring(firstDigitIdx, endNumIdx);
+          String minIsoStr = arrayContent.substring(firstDigitIdx, endNumIdx);
+          int minIso = minIsoStr.toInt();
+          int targetIso = (minIso < 100) ? 100 : minIso;
+          
           String setIsoCmd = "{\"version\":\"1.0\",\"id\":1,\"method\":"
                              "\"setIsoSpeedRate\",\"params\":[\"" +
-                             minIso + "\"]}";
+                             String(targetIso) + "\"]}";
           httpPost(setIsoCmd.c_str());
-          SendLog("ISO set to minimum: " + minIso);
+          SendLog("ISO set to: " + String(targetIso));
         }
       }
     }
@@ -486,7 +494,32 @@ void GoToCamera(int val) {
     SendParameter(progress, CameraSteps, EstimatedTimeMs, CurrentTimeMs,
                   PictureNumber + 1);
 
-    delay(attente);
+    // Check connection during the stabilization wait (attente)
+    unsigned long waitTarget = millis() + attente;
+    while (millis() < waitTarget) {
+      if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
+        SendLog("Camera WiFi lost! Pausing stack...");
+        unsigned long lostTime = millis();
+        
+        // Force reconnect to the correct network if it hopped
+        if (WiFi.SSID() != connectedCameraSSID) {
+            WiFi.disconnect();
+            WiFi.begin(connectedCameraSSID.c_str(), cameraPassword);
+        }
+        
+        while (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
+          if (millis() - lostTime > 120000) { // 2 minutes timeout
+            SendLog("Camera timeout. Aborting stack.");
+            return;
+          }
+          delay(500);
+        }
+        SendLog("Camera reconnected! Resuming...");
+        // Reset stabilization timer since we probably manipulated the camera
+        waitTarget = millis() + attente; 
+      }
+      delay(10);
+    }
 
     // Send request directly to avoid double-connection penalty
     bool requestSent = false;
