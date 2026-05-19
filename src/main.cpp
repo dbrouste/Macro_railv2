@@ -173,14 +173,7 @@ void SetMagnification(float magnification, float aperture) {
 //////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void stopSetupWifi() {
-  Serial.println("Stopping AP and WebServer...");
-  server.stop();
-  WiFi.softAPdisconnect(true);
-  delay(100);
-  WiFi.mode(WIFI_STA);
-  delay(100);
-}
+// stopSetupWifi removed to keep AP alive
 
 String httpPost(const char *jString) {
   String response = "";
@@ -210,23 +203,23 @@ String httpPost(const char *jString) {
 }
 
 int ConnectCamera() {
-  stopSetupWifi(); // Transition from Setup AP to STA mode
-
   SendLog("Scanning for Sony camera...");
-  int n = WiFi.scanNetworks();
   String targetSSID = "";
 
-  if (n == 0) {
-    Serial.println("No networks found");
-    SendLog("No networks found.");
-    return 0;
-  } else {
-    for (int i = 0; i < n; ++i) {
-      if (WiFi.SSID(i).indexOf("ILCE") >= 0) {
-        targetSSID = WiFi.SSID(i);
-        break;
+  for (int retries = 0; retries < 6; retries++) {
+    int n = WiFi.scanNetworks();
+    if (n > 0) {
+      for (int i = 0; i < n; ++i) {
+        if (WiFi.SSID(i).indexOf("ILCE") >= 0) {
+          targetSSID = WiFi.SSID(i);
+          break;
+        }
       }
     }
+    if (targetSSID != "") break;
+    
+    SendLog("Not found, retrying scan...");
+    delay(2000);
   }
 
   if (targetSSID == "") {
@@ -386,6 +379,8 @@ int DefinePos(int val) {
   } else {
     endPosition = currentPosition;
   }
+  // Recalculate and send new Total Photos to UI
+  SetMagnification(Magnification, lensAperture);
   return 1;
 }
 
@@ -478,6 +473,8 @@ void GoToCamera(int val) {
                HIGH ^ InvertSide); // Pull direction pin low to move "forward"
 
   unsigned long startTime = millis();
+  unsigned long lastMotorMoveTime = millis(); // Track when the motor last stopped moving
+
   for (int x = 0; x <= PictureNumber; x++) {
     progress = x * 100 / PictureNumber;
 
@@ -495,28 +492,33 @@ void GoToCamera(int val) {
                   PictureNumber + 1);
 
     // Check connection during the stabilization wait (attente)
-    unsigned long waitTarget = millis() + attente;
+    // By calculating waitTarget based on lastMotorMoveTime, we overlap the 
+    // stabilization time with the time the camera spent saving the previous photo to SD card!
+    unsigned long waitTarget = lastMotorMoveTime + attente;
+    
+    // If the camera took longer to save the photo than the stabilization time, 
+    // waitTarget will be in the past, and we won't wait at all (zero delay)!
     while (millis() < waitTarget) {
       if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
         SendLog("Camera WiFi lost! Pausing stack...");
         unsigned long lostTime = millis();
         
-        // Force reconnect to the correct network if it hopped
-        if (WiFi.SSID() != connectedCameraSSID) {
-            WiFi.disconnect();
-            WiFi.begin(connectedCameraSSID.c_str(), cameraPassword);
-        }
-        
-        while (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
+        bool reconnected = false;
+        while (!reconnected) {
           if (millis() - lostTime > 120000) { // 2 minutes timeout
             SendLog("Camera timeout. Aborting stack.");
             return;
           }
-          delay(500);
+          
+          if (ConnectCamera() == 1) {
+            reconnected = true;
+          } else {
+            delay(2000);
+          }
         }
         SendLog("Camera reconnected! Resuming...");
         // Reset stabilization timer since we probably manipulated the camera
-        waitTarget = millis() + attente; 
+        waitTarget = millis() + attente;
       }
       delay(10);
     }
@@ -552,7 +554,13 @@ void GoToCamera(int val) {
     delay(800); 
 
     if (x < PictureNumber) {
+      Serial.println("Moving rail now...");
+      SendLog("Moving rail...");
+      unsigned long motorStart = millis();
       TurnMotor(ConvDistStep(CameraSteps));
+      Serial.print("Motor moved in (ms): ");
+      Serial.println(millis() - motorStart);
+      lastMotorMoveTime = millis(); // Record the exact time the motor finished moving
     }
 
     // Wait for the camera to finish its processing and send the HTTP response
@@ -623,6 +631,7 @@ void setup() {
 
   // Init WiFi AP
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
   WiFi.softAP("ESP32_Rail_Setup");
   Serial.println("AP started: ESP32_Rail_Setup / 192.168.4.1");
 
@@ -673,9 +682,54 @@ void setup() {
   server.begin();
   Serial.println("Web Server Started");
 
+
   // Basic OTA (PlatformIO / Arduino IDE)
   ArduinoOTA.setHostname("ESP32_Rail");
+  ArduinoOTA.setPort(3232);
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("\n[OTA] Start");
+
+    Serial.printf("[OTA] Sketch size: %u\n", ESP.getSketchSize());
+    Serial.printf("[OTA] Free sketch space: %u\n", ESP.getFreeSketchSpace());
+
+    // Stop anything that may disturb WiFi/flash during OTA
+    client.stop();
+
+    if (deviceConnected && pTxCharacteristic) {
+      SendLog("OTA starting, BLE will stop");
+      delay(100);
+    }
+
+    // Stop BLE before firmware upload
+    NimBLEDevice::stopAdvertising();
+    NimBLEDevice::deinit(true);
+    deviceConnected = false;
+    oldDeviceConnected = false;
+
+    delay(300);
+  });
+
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\n[OTA] End");
+  });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("[OTA] Progress: %u%%\r", (progress * 100) / total);
+  });
+
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("\n[OTA] Error[%u]: ", error);
+
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+
   ArduinoOTA.begin();
+  Serial.println("[OTA] Ready on port 3232");
 
   // Init NimBLE
   NimBLEDevice::init("ESP32_Rail");
@@ -747,6 +801,11 @@ void processCommand(char cmd, int val, float floatVal) {
   case 'Q':
     lensAperture = floatVal;
     SetMagnification(Magnification, lensAperture);
+    break;
+  case 'T':
+    attente = val;
+    Serial.print("Attente set to ");
+    Serial.println(attente);
     break;
   case 'H':
     DisconnectCamera();

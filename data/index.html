@@ -219,7 +219,7 @@
             <button id="btnDisconnectSony" class="btn" onclick="sendCommand('H0')">Disconnect</button>
             <button id="btnTakePicture" class="btn" onclick="sendCommand('J0')">Take Picture</button>
         </div>
-        <p style="font-size: 12px; color: var(--error-color);">* Connecting to Sony will disable the ESP32 setup WiFi. Keep this page open!</p>
+        <p style="font-size: 12px; color: var(--secondary-color);">* ESP32 WiFi remains active during camera connection.</p>
         
         <div class="control-group" style="margin-top: 15px;">
             <div class="telemetry-label">Camera WiFi Password</div>
@@ -242,6 +242,12 @@
                 <div class="telemetry-label">Numerical Aperture (NA)</div>
                 <input type="number" id="inputNA" value="0.14" step="0.01" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;" onchange="updateNAFromUI()">
             </div>
+        </div>
+
+        <div class="control-group" style="margin-bottom: 15px;">
+            <div class="telemetry-label">Stabilization Wait (sec)</div>
+            <input type="number" id="inputAttente" value="4.0" step="0.5" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;" onchange="updateAttenteFromUI()">
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">Time given to the rail to stop vibrating before the picture is taken.</p>
         </div>
 
         <div class="control-group">
@@ -370,6 +376,13 @@
 
     function sendAperture(ap) {
         sendCommand('Q' + ap.toFixed(2));
+    }
+
+    function updateAttenteFromUI() {
+        let val = parseFloat(document.getElementById('inputAttente').value);
+        if (val < 0) val = 0;
+        let ms = Math.round(val * 1000);
+        sendCommand('T' + ms);
     }
 
     function sendPassword() {
