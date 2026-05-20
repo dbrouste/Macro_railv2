@@ -360,6 +360,16 @@ void TurnMotor(int Step) {
   int x;
   digitalWrite(EN, LOW);
 
+  // Ramp parameters for smooth acceleration/deceleration
+  int maxDelay = 3000; // Starting/ending speed in microseconds (slow, gentle)
+  int minDelay = 700;  // Top speed in microseconds (fast)
+  int delayChange = 20; // Change in delay per step (acceleration rate)
+  
+  int accelSteps = (maxDelay - minDelay) / delayChange;
+  if (accelSteps > Step / 2) {
+      accelSteps = Step / 2; // Cap acceleration steps if the movement is very short
+  }
+
   for (x = 0; x < Step; x++) {
     if (pendingCommand == 'A' && pendingValue == 1) {
       SendLog("Motor movement stopped by user.");
@@ -367,10 +377,24 @@ void TurnMotor(int Step) {
       break;
     }
     
+    // Calculate current speed (delay) based on where we are in the movement
+    int currentDelay;
+    if (x < accelSteps) {
+        // Acceleration phase
+        currentDelay = maxDelay - (x * delayChange);
+    } else if (x >= Step - accelSteps) {
+        // Deceleration phase
+        int stepsFromEnd = Step - 1 - x;
+        currentDelay = maxDelay - (stepsFromEnd * delayChange);
+    } else {
+        // Constant max speed phase
+        currentDelay = maxDelay - (accelSteps * delayChange);
+    }
+    
     digitalWrite(stp, HIGH); // Trigger one step forward
-    delay(1);
+    delayMicroseconds(currentDelay);
     digitalWrite(stp, LOW); // Pull step pin low so it can be triggered again
-    delay(1);
+    delayMicroseconds(currentDelay);
     if (direction) {
       currentPosition = currentPosition - 8 / CurrentDriverResolution;
     } else {
