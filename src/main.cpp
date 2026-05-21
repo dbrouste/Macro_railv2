@@ -43,21 +43,21 @@ String pendingPassword = "";
 char commande = '0';
 char valuechar = '0';
 int value = 0;
-int currentPosition = 1000000;
-int startPosition = currentPosition - 1;
-int endPosition = currentPosition + 1;
-float StepperMinDegree = 1.8; // pas mimimum du moteur en degree
-int StepperAngleDiv = 8;      // 1 2 4 ou 8
+long currentPositionBaseSteps = 1000000L;
+long startPositionBaseSteps = currentPositionBaseSteps - 1;
+long endPositionBaseSteps = currentPositionBaseSteps + 1;
+float StepperMinDegree = 1.8f; // pas mimimum du moteur en degree
+int StepperAngleDiv = 8;       // 1 2 4 ou 8
 int CurrentDriverResolution = StepperAngleDiv;
-int thread_size = 700; // in um. M3 = 600 M4 = 700 M5 = 800
-int CameraSteps = 20;  // in um, lenght between focal plane
-int attente = 4000;    // Attente avant photo (en ms)
+int thread_size = 700;   // in um. M3 = 600 M4 = 700 M5 = 800
+long CameraStepsUm = 20; // in um, length between focal plane
+int attente = 4000;      // Attente avant photo (en ms)
 bool direction = 1;
 unsigned long lastmillis;
-float lensAperture = 3.5;
+float lensAperture = 3.5f;
 int progress = 0;
 bool InvertSide = 1; // If motor is moving in the wrong direction
-float Magnification = 10.0;
+float Magnification = 10.0f;
 
 // Sony function
 volatile int counter;
@@ -108,31 +108,40 @@ class MyCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
     std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
+      String rxString = String(rxValue.c_str());
+      rxString.trim(); // removes \n, \r, trailing spaces
+
       Serial.print("Received BLE Value: ");
-      for (int i = 0; i < rxValue.length(); i++) {
-        Serial.print(rxValue[i]);
-      }
-      Serial.println();
+      Serial.println(rxString);
 
-      char cmd = rxValue[0];
-      String payload = String(rxValue.c_str()).substring(1);
+      int colonIndex = rxString.indexOf(':');
+      if (colonIndex > 0) {
+        char cmd = rxString.charAt(0);
+        String payload = rxString.substring(colonIndex + 1);
 
-      if (cmd == 'P') {
-        pendingPassword = payload;
-        pendingCommand = 'P';
-      } else if (cmd == 'Q') {
-        pendingFloatValue = payload.toFloat();
-        pendingCommand = cmd;
+        if (cmd == 'P') {
+          pendingPassword = payload;
+          pendingCommand = 'P';
+        } else if (cmd == 'Q') {
+          pendingFloatValue = payload.toFloat();
+          pendingCommand = cmd;
+        } else if (cmd == 'G') {
+          pendingFloatValue = payload.toFloat();
+          pendingCommand = cmd;
+        } else {
+          pendingValue = payload.toInt();
+          pendingFloatValue = payload.toFloat();
+          pendingCommand = cmd;
+        }
       } else {
-        pendingValue = payload.toInt();
-        pendingFloatValue = payload.toFloat();
-        pendingCommand = cmd;
+        Serial.println("Invalid BLE command format. Expected CMD:VALUE");
       }
     }
   }
 };
 
-int ConvDistStep(int distance); // Forward declaration
+long UmToBaseSteps(float um);
+float BaseStepsToUm(long baseSteps);
 
 void SendParameter(int progress, int CameraSteps, int EstimatedTime,
                    int CurrentTime, int TotalPictures) {
@@ -157,15 +166,23 @@ void SendLog(String message) {
 }
 
 void SetMagnification(float magnification, float aperture) {
-  CameraSteps =
-      (int)roundf(2.2f * aperture * aperture * (magnification + 1.0f) *
-                  (magnification + 1.0f) /
-                  (3.0f * magnification *
-                   magnification)); // https://www.zerenesystems.com/cms/stacker/docs/tables/macromicrodof
-                                    // reduced by 3 to get better result
-  int diff = abs(endPosition - startPosition);
-  int TotalPictures = diff / ConvDistStep(CameraSteps) + 1;
-  SendParameter(0, CameraSteps, 0, 0, TotalPictures);
+  if (magnification <= 0.0f || aperture <= 0.0f) {
+    CameraStepsUm = 1;
+  } else {
+    CameraStepsUm = lroundf(2.2f * aperture * aperture *
+                            (magnification + 1.0f) * (magnification + 1.0f) /
+                            (3.0f * magnification * magnification));
+    if (CameraStepsUm < 1)
+      CameraStepsUm = 1;
+  }
+
+  long diffSteps = labs(endPositionBaseSteps - startPositionBaseSteps);
+  long stepPerPhoto = UmToBaseSteps(CameraStepsUm);
+  if (stepPerPhoto < 1)
+    stepPerPhoto = 1;
+  int TotalPictures = diffSteps / stepPerPhoto + 1;
+
+  SendParameter(0, (int)CameraStepsUm, 0, 0, TotalPictures);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -175,14 +192,15 @@ void SetMagnification(float magnification, float aperture) {
 
 // stopSetupWifi removed to keep AP alive
 
-String httpPost(const char *jString) {
-  String response = "";
+bool httpPost(const char *jString) {
   if (!client.connect(host, httpPort)) {
-    return response;
+    return false;
   }
   String url = "/sony/camera";
 
   client.print(String("POST " + url + " HTTP/1.1\r\n")); /// A6300
+  client.println("Host: " + String(host));
+  client.println("Connection: close");
   client.println("Content-Type: application/json");
   client.print("Content-Length: ");
   client.println(strlen(jString));
@@ -191,11 +209,43 @@ String httpPost(const char *jString) {
 
   unsigned long startT = millis();
   while (!client.available() && millis() - startT < 8000) {
+    delay(1); // Yield to Watchdog
   } // wait 8s max for answer
+
+  bool ok = false;
+  while (client.available()) {
+    String line = client.readStringUntil('\r');
+    if (line.indexOf("200 OK") >= 0)
+      ok = true;
+    Serial.println(line);
+  }
+  client.stop();
+  return ok; // We return true since the command was successfully dispatched
+}
+
+String httpPostWithResponse(const char *jString) {
+  String response = "";
+  if (!client.connect(host, httpPort)) {
+    return response;
+  }
+  String url = "/sony/camera";
+
+  client.print(String("POST " + url + " HTTP/1.1\r\n")); /// A6300
+  client.println("Host: " + String(host));
+  client.println("Connection: close");
+  client.println("Content-Type: application/json");
+  client.print("Content-Length: ");
+  client.println(strlen(jString));
+  client.println();
+  client.println(jString);
+
+  unsigned long startT = millis();
+  while (!client.available() && millis() - startT < 8000) {
+    delay(1);
+  }
 
   while (client.available()) {
     String line = client.readStringUntil('\r');
-    Serial.println(line);
     response += line;
   }
   client.stop();
@@ -216,8 +266,9 @@ int ConnectCamera() {
         }
       }
     }
-    if (targetSSID != "") break;
-    
+    if (targetSSID != "")
+      break;
+
     SendLog("Not found, retrying scan...");
     delay(2000);
   }
@@ -254,12 +305,13 @@ int ConnectCamera() {
 
   httpPost(JSON_1); // initial connect to camera
   httpPost(JSON_2); // startRecMode
-  
-  // Wait a bit for the camera to switch to record mode before requesting settings
+
+  // Wait a bit for the camera to switch to record mode before requesting
+  // settings
   delay(1500);
 
   // Set ISO to minimum available (but at least 100)
-  String isoResp = httpPost(JSON_15);
+  String isoResp = httpPostWithResponse(JSON_15);
   int bracketIdx = isoResp.indexOf("[[");
   if (bracketIdx > 0) {
     int startIdx = bracketIdx + 2;
@@ -279,7 +331,7 @@ int ConnectCamera() {
           String minIsoStr = arrayContent.substring(firstDigitIdx, endNumIdx);
           int minIso = minIsoStr.toInt();
           int targetIso = (minIso < 100) ? 100 : minIso;
-          
+
           String setIsoCmd = "{\"version\":\"1.0\",\"id\":1,\"method\":"
                              "\"setIsoSpeedRate\",\"params\":[\"" +
                              String(targetIso) + "\"]}";
@@ -343,176 +395,234 @@ void ResolutionMoteur(int Resolution) {
   }
 }
 
-int ConvDistStep(int distance) // Convert dist (1um unity) to steps
-{
-  int PasCalc = 0;
-  PasCalc = (int)distance * 360 * CurrentDriverResolution /
-            (thread_size * StepperMinDegree);
-  if (PasCalc < 1) {
-    PasCalc = 1;
-  }
-  Serial.println("ConvDistStep ");
-  Serial.println(PasCalc);
-  return PasCalc;
+long UmToBaseSteps(float um) {
+  float stepsPerRev = (360.0f / StepperMinDegree) * StepperAngleDiv;
+  return lroundf(um * stepsPerRev / (float)thread_size);
 }
 
-void TurnMotor(int Step) {
-  int x;
+float BaseStepsToUm(long baseSteps) {
+  float stepsPerRev = (360.0f / StepperMinDegree) * StepperAngleDiv;
+  return (float)baseSteps * (float)thread_size / stepsPerRev;
+}
+
+bool TurnMotorSteps(long Step) {
+  long x;
   digitalWrite(EN, LOW);
 
   // Ramp parameters for smooth acceleration/deceleration
-  int maxDelay = 3000; // Starting/ending speed in microseconds (slow, gentle)
-  int minDelay = 700;  // Top speed in microseconds (fast)
+  int maxDelay = 3000;  // Starting/ending speed in microseconds (slow, gentle)
+  int minDelay = 700;   // Top speed in microseconds (fast)
   int delayChange = 20; // Change in delay per step (acceleration rate)
-  
-  int accelSteps = (maxDelay - minDelay) / delayChange;
+
+  long accelSteps = (maxDelay - minDelay) / delayChange;
   if (accelSteps > Step / 2) {
-      accelSteps = Step / 2; // Cap acceleration steps if the movement is very short
+    accelSteps =
+        Step / 2; // Cap acceleration steps if the movement is very short
   }
 
   for (x = 0; x < Step; x++) {
     if (pendingCommand == 'A' && pendingValue == 1) {
       SendLog("Motor movement stopped by user.");
       pendingCommand = 'Z';
-      break;
+      return false;
     }
-    
+
     // Calculate current speed (delay) based on where we are in the movement
     int currentDelay;
     if (x < accelSteps) {
-        // Acceleration phase
-        currentDelay = maxDelay - (x * delayChange);
+      // Acceleration phase
+      currentDelay = maxDelay - (x * delayChange);
     } else if (x >= Step - accelSteps) {
-        // Deceleration phase
-        int stepsFromEnd = Step - 1 - x;
-        currentDelay = maxDelay - (stepsFromEnd * delayChange);
+      // Deceleration phase
+      long stepsFromEnd = Step - 1 - x;
+      currentDelay = maxDelay - (stepsFromEnd * delayChange);
     } else {
-        // Constant max speed phase
-        currentDelay = maxDelay - (accelSteps * delayChange);
+      // Constant max speed phase
+      currentDelay = maxDelay - (accelSteps * delayChange);
     }
-    
+
     digitalWrite(stp, HIGH); // Trigger one step forward
     delayMicroseconds(currentDelay);
     digitalWrite(stp, LOW); // Pull step pin low so it can be triggered again
     delayMicroseconds(currentDelay);
+
+    // Maintain absolute position in base microsteps
+    int stepMultiplier = StepperAngleDiv / CurrentDriverResolution;
+    if (stepMultiplier < 1)
+      stepMultiplier = 1;
+
     if (direction) {
-      currentPosition = currentPosition - 8 / CurrentDriverResolution;
+      currentPositionBaseSteps = currentPositionBaseSteps - stepMultiplier;
     } else {
-      currentPosition = currentPosition + 8 / CurrentDriverResolution;
+      currentPositionBaseSteps = currentPositionBaseSteps + stepMultiplier;
     }
   }
+  return true;
 }
 
 int DefinePos(int val) {
   if (val == 0) {
-    startPosition = currentPosition;
+    startPositionBaseSteps = currentPositionBaseSteps;
   } else {
-    endPosition = currentPosition;
+    endPositionBaseSteps = currentPositionBaseSteps;
   }
   // Recalculate and send new Total Photos to UI
   SetMagnification(Magnification, lensAperture);
   return 1;
 }
 
-int Avance(int val) // val is a distance
-{
+int AvanceUm(float distanceUm) {
   direction = 0;
   digitalWrite(dir,
                HIGH ^ InvertSide); // Pull direction pin low to move "forward"
-  TurnMotor(val);
-  return 1;
+  long baseSteps = UmToBaseSteps(distanceUm);
+
+  int originalResolution = CurrentDriverResolution;
+  ResolutionMoteur(StepperAngleDiv);
+  bool ok = TurnMotorSteps(baseSteps);
+  ResolutionMoteur(originalResolution);
+  return ok ? 1 : 0;
 }
 
-int Recule(int val) {
+int ReculeUm(float distanceUm) {
   direction = 1;
-  digitalWrite(dir,
-               LOW ^ InvertSide); // Pull direction pin low to move "forward"
-  TurnMotor(val);
-  return 1;
+  digitalWrite(dir, LOW ^ InvertSide);
+  long baseSteps = UmToBaseSteps(distanceUm);
+
+  int originalResolution = CurrentDriverResolution;
+  ResolutionMoteur(StepperAngleDiv);
+  bool ok = TurnMotorSteps(baseSteps);
+  ResolutionMoteur(originalResolution);
+  return ok ? 1 : 0;
 }
 
 int Move(int val) {
   Serial.print("Move val ");
   Serial.println(val);
-  ResolutionMoteur(1);
   switch (val) {
   case 1:
-    Avance(ConvDistStep(100)); // 0.1mm
+    AvanceUm(100.0f); // 0.1mm
     break;
   case 2:
-    Avance(ConvDistStep(1000)); // 1mm
+    AvanceUm(1000.0f); // 1mm
     break;
   case 3:
-    Avance(ConvDistStep(10000)); // 10mm
+    AvanceUm(10000.0f); // 10mm
     break;
   }
-  ResolutionMoteur(StepperAngleDiv);
   return 1;
 }
 
 int MoveNeg(int val) {
-  ResolutionMoteur(1);
   switch (val) {
   case 1:
-    Recule(ConvDistStep(100)); // 0.1mm
+    ReculeUm(100.0f); // 0.1mm
     break;
   case 2:
-    Recule(ConvDistStep(1000)); // 1mm
+    ReculeUm(1000.0f); // 1mm
     break;
   case 3:
-    Recule(ConvDistStep(10000)); // 10mm
+    ReculeUm(10000.0f); // 10mm
     break;
   }
-  ResolutionMoteur(StepperAngleDiv);
   return 1;
 }
 
-void GoTo(int val) {
-  int diff = val - currentPosition;
-  Serial.println("Diff ");
+bool GoToBaseSteps(long targetBaseSteps) {
+  int originalResolution = CurrentDriverResolution;
+  ResolutionMoteur(StepperAngleDiv);
+
+  long diff = targetBaseSteps - currentPositionBaseSteps;
+  Serial.println("Diff steps ");
   Serial.println(diff);
+
+  bool success = true;
   if (diff > 0) {
-    Avance(diff);
-  } else {
-    Recule(abs(diff));
+    direction = 0;
+    digitalWrite(dir, HIGH ^ InvertSide);
+    success = TurnMotorSteps(diff);
+  } else if (diff < 0) {
+    direction = 1;
+    digitalWrite(dir, LOW ^ InvertSide);
+    success = TurnMotorSteps(labs(diff));
   }
+
+  ResolutionMoteur(originalResolution);
+  return success;
 }
 
 void GoToStartEnd(int val) {
   if (val == 0) {
-    GoTo(startPosition);
+    GoToBaseSteps(startPositionBaseSteps);
   } else {
-    GoTo(endPosition);
+    GoToBaseSteps(endPositionBaseSteps);
   }
 }
 
-void GoToCamera(int val) {
-  int diff = val - currentPosition; // number of steps to do
-  if (diff < 0) {
-    return;
+bool sendSonyPostNoWait(const char *jString) {
+  if (!client.connect(host, httpPort)) {
+    return false;
   }
-  int PictureNumber =
-      (int)diff / ConvDistStep(CameraSteps); // calculate the picture number
-  Serial.print("DiffCamera");
+  String url = "/sony/camera";
+  client.print(String("POST " + url + " HTTP/1.1\r\n"));
+  client.println("Host: " + String(host));
+  client.println("Connection: close");
+  client.println("Content-Type: application/json");
+  client.print("Content-Length: ");
+  client.println(strlen(jString));
+  client.println();
+  client.println(jString);
+  return true;
+}
+
+const int shutterSafetyDelayMs =
+    800; // Valide pour exposition courte. A augmenter pour pose longue.
+
+bool GoToCameraSteps(long targetBaseSteps) {
+  long diff = targetBaseSteps - currentPositionBaseSteps;
+
+  long stepPerPhoto = UmToBaseSteps(CameraStepsUm);
+  if (stepPerPhoto < 1)
+    stepPerPhoto = 1;
+
+  int PictureNumber = (int)(labs(diff) / stepPerPhoto);
+  if (PictureNumber < 0)
+    return false;
+
+  Serial.print("DiffCamera steps: ");
   Serial.println(diff);
-  Serial.print("PictureNumber");
+  Serial.print("PictureNumber: ");
   Serial.println(PictureNumber);
 
-  direction = 0; //
-  digitalWrite(dir,
-               HIGH ^ InvertSide); // Pull direction pin low to move "forward"
+  if (diff < 0) {
+    direction = 1;
+    digitalWrite(dir, LOW ^ InvertSide); // Move backward
+  } else {
+    direction = 0;
+    digitalWrite(dir, HIGH ^ InvertSide); // Move forward
+  }
 
+  int originalResolution = CurrentDriverResolution;
+  ResolutionMoteur(StepperAngleDiv);
+
+  bool success = true;
   unsigned long startTime = millis();
-  unsigned long lastMotorMoveTime = millis(); // Track when the motor last stopped moving
+  unsigned long lastMotorMoveTime =
+      millis(); // Track when the motor last stopped moving
 
   for (int x = 0; x <= PictureNumber; x++) {
     if (pendingCommand == 'A' && pendingValue == 1) {
       SendLog("Stack stopped by user.");
       pendingCommand = 'Z';
-      return;
+      success = false;
+      goto cleanup;
     }
 
-    progress = x * 100 / PictureNumber;
+    if (PictureNumber > 0) {
+      progress = x * 100 / PictureNumber;
+    } else {
+      progress = 100;
+    }
 
     int CurrentTimeMs = millis() - startTime;
     int EstimatedTimeMs = 0;
@@ -521,18 +631,21 @@ void GoToCamera(int val) {
       unsigned long avgTimePerPhoto = CurrentTimeMs / x;
       EstimatedTimeMs = avgTimePerPhoto * photosRemaining;
     } else {
-      EstimatedTimeMs = photosRemaining * (attente + 2000); // 2000ms added for typical camera processing
+      EstimatedTimeMs =
+          photosRemaining *
+          (attente + 2000); // 2000ms added for typical camera processing
     }
 
-    SendParameter(progress, CameraSteps, EstimatedTimeMs, CurrentTimeMs,
+    SendParameter(progress, (int)CameraStepsUm, EstimatedTimeMs, CurrentTimeMs,
                   PictureNumber + 1);
 
     // Check connection during the stabilization wait (attente)
-    // By calculating waitTarget based on lastMotorMoveTime, we overlap the 
-    // stabilization time with the time the camera spent saving the previous photo to SD card!
+    // By calculating waitTarget based on lastMotorMoveTime, we overlap the
+    // stabilization time with the time the camera spent saving the previous
+    // photo to SD card!
     unsigned long waitTarget = lastMotorMoveTime + attente;
-    
-    // If the camera took longer to save the photo than the stabilization time, 
+
+    // If the camera took longer to save the photo than the stabilization time,
     // waitTarget will be in the past, and we won't wait at all (zero delay)!
     while (millis() < waitTarget) {
       if (pendingCommand == 'A' && pendingValue == 1) {
@@ -540,24 +653,26 @@ void GoToCamera(int val) {
         pendingCommand = 'Z';
         return;
       }
-      
+
       if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
         SendLog("Camera WiFi lost! Pausing stack...");
         unsigned long lostTime = millis();
-        
+
         bool reconnected = false;
         while (!reconnected) {
           if (pendingCommand == 'A' && pendingValue == 1) {
             SendLog("Stack stopped by user.");
             pendingCommand = 'Z';
-            return;
+            success = false;
+            goto cleanup;
           }
-          
+
           if (millis() - lostTime > 120000) { // 2 minutes timeout
             SendLog("Camera timeout. Aborting stack.");
-            return;
+            success = false;
+            goto cleanup;
           }
-          
+
           if (ConnectCamera() == 1) {
             reconnected = true;
           } else {
@@ -575,19 +690,13 @@ void GoToCamera(int val) {
     bool requestSent = false;
     unsigned long waitStart = millis();
     while (!requestSent) {
-      if (client.connect(host, httpPort)) {
-        String url = "/sony/camera";
-        client.print(String("POST " + url + " HTTP/1.1\r\n"));
-        client.println("Content-Type: application/json");
-        client.print("Content-Length: ");
-        client.println(strlen(JSON_5));
-        client.println();
-        client.println(JSON_5);
+      if (sendSonyPostNoWait(JSON_5)) {
         requestSent = true;
       } else {
         if (millis() - waitStart > 120000) { // 2 minutes timeout
           SendLog("Camera timeout. Aborting stack.");
-          return;
+          success = false;
+          goto cleanup;
         }
         SendLog("Camera not responding, waiting...");
         delay(2000);
@@ -595,20 +704,25 @@ void GoToCamera(int val) {
     }
 
     Serial.println("Take picture");
-    
-    // The camera triggers the shutter very quickly, but takes seconds to save to SD card.
-    // Wait a fixed safe margin (800ms) to ensure the shutter has closed, 
+
+    // The camera triggers the shutter very quickly, but takes seconds to save
+    // to SD card. Wait a fixed safe margin to ensure the shutter has closed,
     // then move the rail WHILE the camera is busy saving the file!
-    delay(800); 
+    delay(shutterSafetyDelayMs);
 
     if (x < PictureNumber) {
       Serial.println("Moving rail now...");
       SendLog("Moving rail...");
       unsigned long motorStart = millis();
-      TurnMotor(ConvDistStep(CameraSteps));
+
+      if (!TurnMotorSteps(stepPerPhoto)) {
+        success = false;
+        goto cleanup; // Aborted by user
+      }
       Serial.print("Motor moved in (ms): ");
       Serial.println(millis() - motorStart);
-      lastMotorMoveTime = millis(); // Record the exact time the motor finished moving
+      lastMotorMoveTime =
+          millis(); // Record the exact time the motor finished moving
     }
 
     // Wait for the camera to finish its processing and send the HTTP response
@@ -617,8 +731,8 @@ void GoToCamera(int val) {
       if (pendingCommand == 'A' && pendingValue == 1) {
         SendLog("Stack stopped by user.");
         pendingCommand = 'Z';
-        client.stop();
-        return;
+        success = false;
+        goto cleanup;
       }
       delay(10);
     }
@@ -627,15 +741,23 @@ void GoToCamera(int val) {
     while (client.available()) {
       client.readStringUntil('\r');
     }
-    client.stop();
   }
+
+cleanup:
+  client.stop();
+  ResolutionMoteur(originalResolution);
+  return success;
 }
 
 int Start() {
   Serial.println("GoToStart");
-  GoTo(startPosition);
+  if (!GoToBaseSteps(startPositionBaseSteps)) {
+    return 0; // User stopped during initialization
+  }
   Serial.println("GoCamera");
-  GoToCamera(endPosition);
+  if (!GoToCameraSteps(endPositionBaseSteps)) {
+    return 0;
+  }
   return 1;
 }
 
@@ -670,7 +792,6 @@ void setup() {
   resetEDPins(); // Set step, direction, microstep and enable pins to default
                  // states
   ResolutionMoteur(StepperAngleDiv);
-  SetMagnification(Magnification, lensAperture); // mag,aperture
 
   preferences.begin("rail_app", false);
   String savedPass = preferences.getString("sony_pass", "qXb1X35h");
@@ -715,7 +836,10 @@ void setup() {
         HTTPUpload &upload = server.upload();
         if (upload.status == UPLOAD_FILE_START) {
           Serial.printf("Update: %s\n", upload.filename.c_str());
-          int cmd = (upload.filename.indexOf("littlefs") > -1 || upload.filename.indexOf("spiffs") > -1) ? U_SPIFFS : U_FLASH;
+          int cmd = (upload.filename.indexOf("littlefs") > -1 ||
+                     upload.filename.indexOf("spiffs") > -1)
+                        ? U_SPIFFS
+                        : U_FLASH;
           if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
             Update.printError(Serial);
           }
@@ -736,7 +860,6 @@ void setup() {
 
   server.begin();
   Serial.println("Web Server Started");
-
 
   // Basic OTA (PlatformIO / Arduino IDE)
   ArduinoOTA.setHostname("ESP32_Rail");
@@ -765,9 +888,7 @@ void setup() {
     delay(300);
   });
 
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\n[OTA] End");
-  });
+  ArduinoOTA.onEnd([]() { Serial.println("\n[OTA] End"); });
 
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     Serial.printf("[OTA] Progress: %u%%\r", (progress * 100) / total);
@@ -776,11 +897,16 @@ void setup() {
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("\n[OTA] Error[%u]: ", error);
 
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    if (error == OTA_AUTH_ERROR)
+      Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)
+      Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR)
+      Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR)
+      Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR)
+      Serial.println("End Failed");
   });
 
   ArduinoOTA.begin();
@@ -805,10 +931,19 @@ void setup() {
 
   pService->start();
 
-  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->start();
-  Serial.println("BLE Advertising Started");
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(
+      0x06); // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  Serial.println("Characteristic defined! Now you can read it in your phone!");
+
+  // Now that BLE is initialized, we can safely call SetMagnification
+  // which will try to send the initial parameters via BLE notification.
+  SetMagnification(Magnification, lensAperture); // mag,aperture
 }
 
 void processCommand(char cmd, int val, float floatVal) {

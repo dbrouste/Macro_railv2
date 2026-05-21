@@ -491,9 +491,13 @@
             return;
         }
         try {
-            log('Sending: ' + cmd);
+            let commandLetter = cmd.charAt(0);
+            let commandValue = cmd.substring(1);
+            let newCmd = commandLetter + ':' + commandValue + '\n';
+            
+            log('Sending: ' + newCmd.trim());
             let encoder = new TextEncoder();
-            await rxCharacteristic.writeValue(encoder.encode(cmd));
+            await rxCharacteristic.writeValue(encoder.encode(newCmd));
         } catch (error) {
             log('Send Error: ' + error);
         }
