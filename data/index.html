@@ -90,6 +90,16 @@
             transform: scale(0.98);
         }
 
+        .btn:disabled,
+        .btn[disabled] {
+            background-color: #444;
+            color: #999;
+            border-color: #666;
+            cursor: not-allowed;
+            opacity: 0.65;
+            pointer-events: none;
+        }
+
         .btn-primary {
             background-color: var(--primary-color);
             color: #000;
@@ -215,8 +225,8 @@
     <div class="panel">
         <h2>Camera Control (Sony)</h2>
         <div class="grid-3">
-            <button id="btnConnectSony" class="btn btn-primary" onclick="sendCommand('F0')">Connect Sony</button>
-            <button id="btnDisconnectSony" class="btn" onclick="sendCommand('H0')">Disconnect</button>
+            <button id="btnConnectSony" class="btn btn-primary" onclick="connectSony()">Connect Sony</button>
+            <button id="btnDisconnectSony" class="btn" onclick="disconnectSony()">Disconnect</button>
             <button id="btnTakePicture" class="btn" onclick="sendCommand('J0')">Take Picture</button>
         </div>
         <p style="font-size: 12px; color: var(--secondary-color);">* ESP32 WiFi remains active during camera connection.</p>
@@ -233,12 +243,20 @@
 
     <div class="panel">
         <h2>Movement Control</h2>
+        <div class="control-group" style="margin-bottom: 15px;">
+            <div class="telemetry-label">Objective Mode</div>
+            <select id="objectiveMode" onchange="switchObjectiveMode(this.value)" style="width:100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;">
+                <option value="macro">Macro</option>
+                <option value="microscope">Microscope</option>
+            </select>
+        </div>
+
         <div class="grid-2" style="margin-bottom: 15px;">
-            <div class="control-group">
+            <div class="control-group" id="apertureControl">
                 <div class="telemetry-label">Aperture (f/)</div>
                 <input type="number" id="inputAperture" value="3.5" step="0.1" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;" onchange="updateApertureFromUI()">
             </div>
-            <div class="control-group">
+            <div class="control-group" id="naControl" style="display: none;">
                 <div class="telemetry-label">Numerical Aperture (NA)</div>
                 <input type="number" id="inputNA" value="0.14" step="0.01" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;" onchange="updateNAFromUI()">
             </div>
@@ -273,8 +291,8 @@
         </div>
 
         <div class="grid-2" style="margin-top: 20px;">
-            <button class="btn" onclick="sendCommand('C0')">Set Start Pos</button>
-            <button class="btn" onclick="sendCommand('C1')">Set End Pos</button>
+            <button class="btn" onclick="setStartPos()">Set Start Pos</button>
+            <button class="btn" onclick="setEndPos()">Set End Pos</button>
         </div>
         <div class="grid-2">
             <button class="btn" onclick="sendCommand('B0')">Go to Start</button>
@@ -285,7 +303,7 @@
     <div class="panel">
         <h2>Execution</h2>
         <div class="grid-2">
-            <button class="btn btn-primary" onclick="sendCommand('A0')">START STACK</button>
+            <button id="btnStartStack" class="btn btn-primary" onclick="sendCommand('A0')" disabled>START STACK</button>
             <button class="btn btn-danger" onclick="sendCommand('A1')">STOP</button>
         </div>
     </div>
@@ -338,6 +356,73 @@
     const bleStatusLight = document.getElementById('bleStatusLight');
     const bleStatusText = document.getElementById('bleStatusText');
     const logWindow = document.getElementById('logWindow');
+    const btnStartStack = document.getElementById('btnStartStack');
+    const apertureControl = document.getElementById('apertureControl');
+    const naControl = document.getElementById('naControl');
+
+    let isCameraConnected = false;
+    let isStartPositionDefined = false;
+    let isEndPositionDefined = false;
+    let objectiveMode = 'macro';
+    let useMicroscopeObjective = false;
+    let numericalAperture = 0.14;
+
+    function updateStartStackButtonState() {
+        if (!btnStartStack) return;
+        btnStartStack.disabled = !(isCameraConnected && isStartPositionDefined && isEndPositionDefined);
+    }
+
+    function connectSony() {
+        isCameraConnected = true;
+        updateStartStackButtonState();
+        sendCommand('F0');
+    }
+
+    function disconnectSony() {
+        isCameraConnected = false;
+        updateStartStackButtonState();
+        sendCommand('H0');
+    }
+
+    function switchObjectiveMode(mode) {
+        objectiveMode = mode;
+        useMicroscopeObjective = mode === 'microscope';
+        updateObjectiveModeUI();
+        sendCommand('O' + (useMicroscopeObjective ? '1' : '0'));
+
+        if (useMicroscopeObjective) {
+            let naValue = parseFloat(document.getElementById('inputNA').value);
+            if (naValue > 0) {
+                sendAperture(naValue);
+            }
+        } else {
+            let apValue = parseFloat(document.getElementById('inputAperture').value);
+            if (apValue > 0) {
+                sendAperture(apValue);
+            }
+        }
+    }
+
+    function updateObjectiveModeUI() {
+        if (!apertureControl || !naControl) return;
+        apertureControl.style.display = objectiveMode === 'macro' ? 'block' : 'none';
+        naControl.style.display = objectiveMode === 'microscope' ? 'block' : 'none';
+    }
+
+    function setStartPos() {
+        isStartPositionDefined = true;
+        updateStartStackButtonState();
+        sendCommand('C0');
+    }
+
+    function setEndPos() {
+        isEndPositionDefined = true;
+        updateStartStackButtonState();
+        sendCommand('C1');
+    }
+
+    updateObjectiveModeUI();
+    updateStartStackButtonState();
 
     function log(msg) {
         console.log(msg);
@@ -368,9 +453,7 @@
     function updateNAFromUI() {
         let na = parseFloat(document.getElementById('inputNA').value);
         if (na > 0) {
-            let ap = 1.0 / (2.0 * na);
-            document.getElementById('inputAperture').value = ap.toFixed(2);
-            sendAperture(ap);
+            sendAperture(na);
         }
     }
 

@@ -55,6 +55,8 @@ int attente = 4000;      // Attente avant photo (en ms)
 bool direction = 1;
 unsigned long lastmillis;
 float lensAperture = 3.5f;
+float numericalAperture = 0.14f;
+bool useMicroscopeObjective = false;
 int progress = 0;
 bool InvertSide = 1; // If motor is moving in the wrong direction
 float Magnification = 10.0f;
@@ -169,9 +171,14 @@ void SetMagnification(float magnification, float aperture) {
   if (magnification <= 0.0f || aperture <= 0.0f) {
     CameraStepsUm = 1;
   } else {
-    CameraStepsUm = lroundf(2.2f * aperture * aperture *
-                            (magnification + 1.0f) * (magnification + 1.0f) /
-                            (3.0f * magnification * magnification));
+    const float safetyFactor = 3.0f;
+    if (useMicroscopeObjective) {
+      CameraStepsUm = lroundf((0.55f / (aperture * aperture)) / safetyFactor);
+    } else {
+      CameraStepsUm = lroundf(2.2f * aperture * aperture *
+                              (magnification + 1.0f) * (magnification + 1.0f) /
+                              (safetyFactor * magnification * magnification));
+    }
     if (CameraStepsUm < 1)
       CameraStepsUm = 1;
   }
@@ -408,6 +415,10 @@ float BaseStepsToUm(long baseSteps) {
 bool TurnMotorSteps(long Step) {
   long x;
   digitalWrite(EN, LOW);
+  Serial.print("TurnMotorSteps called with steps=");
+  Serial.print(Step);
+  Serial.print(" direction=");
+  Serial.println(direction ? "backward" : "forward");
 
   // Ramp parameters for smooth acceleration/deceleration
   int maxDelay = 3000;  // Starting/ending speed in microseconds (slow, gentle)
@@ -501,12 +512,15 @@ int Move(int val) {
   Serial.println(val);
   switch (val) {
   case 1:
+    Serial.println("Move -> forward 0.1 mm");
     AvanceUm(100.0f); // 0.1mm
     break;
   case 2:
+    Serial.println("Move -> forward 1.0 mm");
     AvanceUm(1000.0f); // 1mm
     break;
   case 3:
+    Serial.println("Move -> forward 10.0 mm");
     AvanceUm(10000.0f); // 10mm
     break;
   }
@@ -514,14 +528,19 @@ int Move(int val) {
 }
 
 int MoveNeg(int val) {
+  Serial.print("MoveNeg val ");
+  Serial.println(val);
   switch (val) {
   case 1:
+    Serial.println("MoveNeg -> backward 0.1 mm");
     ReculeUm(100.0f); // 0.1mm
     break;
   case 2:
+    Serial.println("MoveNeg -> backward 1.0 mm");
     ReculeUm(1000.0f); // 1mm
     break;
   case 3:
+    Serial.println("MoveNeg -> backward 10.0 mm");
     ReculeUm(10000.0f); // 10mm
     break;
   }
@@ -651,7 +670,7 @@ bool GoToCameraSteps(long targetBaseSteps) {
       if (pendingCommand == 'A' && pendingValue == 1) {
         SendLog("Stack stopped by user.");
         pendingCommand = 'Z';
-        return;
+        return false;
       }
 
       if (WiFi.status() != WL_CONNECTED || WiFi.SSID() != connectedCameraSSID) {
@@ -976,9 +995,13 @@ void processCommand(char cmd, int val, float floatVal) {
     DefinePos(val);
     break;
   case 'D':
+    Serial.print("Command D received: move forward val=");
+    Serial.println(val);
     Move(val);
     break;
   case 'E':
+    Serial.print("Command E received: move backward val=");
+    Serial.println(val);
     MoveNeg(val);
     break;
   case 'F':
@@ -986,11 +1009,24 @@ void processCommand(char cmd, int val, float floatVal) {
     break;
   case 'G':
     Magnification = floatVal;
-    SetMagnification(Magnification, lensAperture);
+    SetMagnification(Magnification, useMicroscopeObjective ? numericalAperture : lensAperture);
     break;
   case 'Q':
-    lensAperture = floatVal;
-    SetMagnification(Magnification, lensAperture);
+    if (useMicroscopeObjective) {
+      numericalAperture = floatVal;
+    } else {
+      lensAperture = floatVal;
+    }
+    SetMagnification(Magnification, floatVal);
+    break;
+  case 'O':
+    useMicroscopeObjective = (val == 1);
+    if (useMicroscopeObjective) {
+      SendLog("Objective mode: Microscope");
+    } else {
+      SendLog("Objective mode: Macro");
+    }
+    SetMagnification(Magnification, useMicroscopeObjective ? numericalAperture : lensAperture);
     break;
   case 'T':
     attente = val;
