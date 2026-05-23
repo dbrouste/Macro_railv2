@@ -167,6 +167,14 @@ void SendLog(String message) {
   }
 }
 
+void SaveUISettings() {
+  preferences.putBool("ui_mic", useMicroscopeObjective);
+  preferences.putFloat("lens_ap", lensAperture);
+  preferences.putFloat("na", numericalAperture);
+  preferences.putFloat("mag", Magnification);
+  preferences.putInt("wait", attente);
+}
+
 void SetMagnification(float magnification, float aperture) {
   if (magnification <= 0.0f || aperture <= 0.0f) {
     CameraStepsUm = 1;
@@ -813,6 +821,13 @@ void setup() {
   ResolutionMoteur(StepperAngleDiv);
 
   preferences.begin("rail_app", false);
+  bool savedMicroscopeMode = preferences.getBool("ui_mic", false);
+  useMicroscopeObjective = savedMicroscopeMode;
+  lensAperture = preferences.getFloat("lens_ap", 3.5f);
+  numericalAperture = preferences.getFloat("na", 0.14f);
+  Magnification = preferences.getFloat("mag", 10.0f);
+  attente = preferences.getInt("wait", 4000);
+
   String savedPass = preferences.getString("sony_pass", "qXb1X35h");
   savedPass.toCharArray(cameraPassword, 64);
 
@@ -832,6 +847,48 @@ void setup() {
 
   // Init WebServer
   server.serveStatic("/", LittleFS, "/index.html");
+
+  server.on("/settings", HTTP_GET, []() {
+    String json = "{";
+    json += "\"mode\":\"" + String(useMicroscopeObjective ? "microscope" : "macro") + "\"";
+    json += ",\"aperture\":" + String(lensAperture, 2);
+    json += ",\"na\":" + String(numericalAperture, 3);
+    json += ",\"magnification\":" + String(Magnification, 2);
+    json += ",\"attente\":" + String(attente);
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+
+  server.on("/settings", HTTP_POST, []() {
+    if (server.hasArg("objectiveMode")) {
+      String mode = server.arg("objectiveMode");
+      useMicroscopeObjective = (mode == "microscope");
+      preferences.putBool("ui_mic", useMicroscopeObjective);
+    }
+    if (server.hasArg("aperture")) {
+      float ap = server.arg("aperture").toFloat();
+      if (ap > 0) {
+        lensAperture = ap;
+        preferences.putFloat("lens_ap", lensAperture);
+      }
+    }
+    if (server.hasArg("na")) {
+      float na = server.arg("na").toFloat();
+      if (na > 0) {
+        numericalAperture = na;
+        preferences.putFloat("na", numericalAperture);
+      }
+    }
+    if (server.hasArg("magnification")) {
+      Magnification = server.arg("magnification").toFloat();
+      preferences.putFloat("mag", Magnification);
+    }
+    if (server.hasArg("attente")) {
+      attente = server.arg("attente").toInt();
+      preferences.putInt("wait", attente);
+    }
+    server.send(200, "text/plain", "OK");
+  });
 
   // OTA Web Updater
   server.on("/update", HTTP_GET, []() {

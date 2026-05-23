@@ -244,9 +244,9 @@
     <div class="panel">
         <h2>Movement Control</h2>
         <div class="control-group" style="margin-bottom: 15px;">
-            <div class="telemetry-label">Objective Mode</div>
+            <div class="telemetry-label">Mode</div>
             <select id="objectiveMode" onchange="switchObjectiveMode(this.value)" style="width:100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;">
-                <option value="macro">Macro</option>
+                <option value="macro">Macro lens</option>
                 <option value="microscope">Microscope</option>
             </select>
         </div>
@@ -262,20 +262,38 @@
             </div>
         </div>
 
+        <div class="control-group" id="magnificationSliderContainer">
+            <div class="telemetry-label">Magnification</div>
+            <div class="slider-container">
+                <input type="range" id="magSlider" min="1" max="5" step="0.1" value="1" oninput="updateMagDisplay(this.value)" onchange="sendMagnification(this.value)">
+                <div class="value-display" id="magValue">1x</div>
+            </div>
+        </div>
+
+        <div class="control-group" id="magnificationSelectContainer" style="display: none;">
+            <div class="telemetry-label">Magnification</div>
+            <select id="magSelect" style="width:100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;" onchange="sendMagnification(this.value)">
+                <option value="2">2x</option>
+                <option value="5">5x</option>
+                <option value="10">10x</option>
+                <option value="20">20x</option>
+                <option value="30">30x</option>
+                <option value="40">40x</option>
+                <option value="50">50x</option>
+                <option value="60">60x</option>
+                <option value="70">70x</option>
+                <option value="80">80x</option>
+                <option value="90">90x</option>
+                <option value="100">100x</option>
+            </select>
+        </div>
+
         <div class="control-group" style="margin-bottom: 15px;">
             <div class="telemetry-label">Stabilization Wait (sec)</div>
             <input type="number" id="inputAttente" value="4.0" step="0.5" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: white;" onchange="updateAttenteFromUI()">
             <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">Time given to the rail to stop vibrating before the picture is taken.</p>
         </div>
 
-        <div class="control-group">
-            <div class="telemetry-label">Magnification</div>
-            <div class="slider-container">
-                <input type="range" id="magSlider" min="1" max="20" step="0.5" value="10" oninput="updateMagDisplay(this.value)" onchange="sendMagnification(this.value)">
-                <div class="value-display" id="magValue">10x</div>
-            </div>
-        </div>
-        
         <div class="telemetry-label" style="margin-top: 15px;">Backward (-)</div>
         <div class="grid-3">
             <button class="btn" onclick="sendCommand('E3')">-10 mm</button>
@@ -359,6 +377,10 @@
     const btnStartStack = document.getElementById('btnStartStack');
     const apertureControl = document.getElementById('apertureControl');
     const naControl = document.getElementById('naControl');
+    const magnificationSliderContainer = document.getElementById('magnificationSliderContainer');
+    const magnificationSelectContainer = document.getElementById('magnificationSelectContainer');
+    const magSlider = document.getElementById('magSlider');
+    const magSelect = document.getElementById('magSelect');
 
     let isCameraConnected = false;
     let isStartPositionDefined = false;
@@ -391,22 +413,92 @@
         sendCommand('O' + (useMicroscopeObjective ? '1' : '0'));
 
         if (useMicroscopeObjective) {
-            let naValue = parseFloat(document.getElementById('inputNA').value);
-            if (naValue > 0) {
-                sendAperture(naValue);
+            if (magSlider) {
+                magSlider.min = 2;
+                magSlider.max = 100;
+                magSlider.step = 1;
+                magSlider.value = 2;
             }
+            if (magSelect) {
+                magSelect.value = '2';
+            }
+            sendMagnification(2);
         } else {
-            let apValue = parseFloat(document.getElementById('inputAperture').value);
-            if (apValue > 0) {
-                sendAperture(apValue);
+            if (magSlider) {
+                magSlider.min = 1;
+                magSlider.max = 5;
+                magSlider.step = 0.1;
+                magSlider.value = 1;
             }
+            if (magSelect) {
+                magSelect.value = '2';
+            }
+            sendMagnification(1);
+        }
+        saveSettings();
+    }
+
+    async function saveSettings() {
+        if (!magSlider || !magSelect) return;
+
+        const aperture = parseFloat(document.getElementById('inputAperture').value) || 0;
+        const na = parseFloat(document.getElementById('inputNA').value) || 0;
+        const magnification = objectiveMode === 'microscope' ? parseFloat(magSelect.value) : parseFloat(magSlider.value);
+        const attenteSec = parseFloat(document.getElementById('inputAttente').value) || 0;
+        const waitMs = Math.round(attenteSec * 1000);
+
+        const body = `objectiveMode=${encodeURIComponent(objectiveMode)}&aperture=${encodeURIComponent(aperture.toFixed(2))}` +
+                     `&na=${encodeURIComponent(na.toFixed(3))}` +
+                     `&magnification=${encodeURIComponent(magnification.toFixed(2))}` +
+                     `&attente=${encodeURIComponent(waitMs)}`;
+
+        fetch('/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body
+        }).catch(error => log('Save settings failed: ' + error));
+    }
+
+    async function loadUISettings() {
+        try {
+            const response = await fetch('/settings');
+            if (!response.ok) return;
+            const data = await response.json();
+
+            objectiveMode = data.mode === 'microscope' ? 'microscope' : 'macro';
+            useMicroscopeObjective = objectiveMode === 'microscope';
+            document.getElementById('objectiveMode').value = objectiveMode;
+
+            if (!isNaN(parseFloat(data.aperture))) {
+                document.getElementById('inputAperture').value = parseFloat(data.aperture).toFixed(2);
+            }
+            if (!isNaN(parseFloat(data.na))) {
+                document.getElementById('inputNA').value = parseFloat(data.na).toFixed(3);
+            }
+            if (!isNaN(parseFloat(data.magnification))) {
+                if (useMicroscopeObjective) {
+                    magSelect.value = Math.round(parseFloat(data.magnification)).toString();
+                } else {
+                    magSlider.value = parseFloat(data.magnification).toFixed(1);
+                }
+                document.getElementById('magValue').innerText = useMicroscopeObjective ? Math.round(parseFloat(data.magnification)) + 'x' : parseFloat(data.magnification).toFixed(1) + 'x';
+            }
+            if (!isNaN(parseFloat(data.attente))) {
+                document.getElementById('inputAttente').value = (parseInt(data.attente, 10) / 1000).toFixed(1);
+            }
+
+            updateObjectiveModeUI();
+        } catch (error) {
+            log('Failed to load settings: ' + error);
         }
     }
 
     function updateObjectiveModeUI() {
-        if (!apertureControl || !naControl) return;
+        if (!apertureControl || !naControl || !magnificationSliderContainer || !magnificationSelectContainer) return;
         apertureControl.style.display = objectiveMode === 'macro' ? 'block' : 'none';
         naControl.style.display = objectiveMode === 'microscope' ? 'block' : 'none';
+        magnificationSliderContainer.style.display = objectiveMode === 'macro' ? 'block' : 'none';
+        magnificationSelectContainer.style.display = objectiveMode === 'microscope' ? 'block' : 'none';
     }
 
     function setStartPos() {
@@ -422,6 +514,7 @@
     }
 
     updateObjectiveModeUI();
+    loadUISettings();
     updateStartStackButtonState();
 
     function log(msg) {
@@ -431,14 +524,29 @@
     }
 
     function updateMagDisplay(val) {
-        document.getElementById('magValue').innerText = val + 'x';
+        document.getElementById('magValue').innerText = parseFloat(val).toFixed(1) + 'x';
     }
 
     function sendMagnification(val) {
         let v = parseFloat(val);
-        if (v > 20) v = 20.0;
-        if (v < 0.1) v = 0.1;
+        if (isNaN(v)) return;
+        if (objectiveMode === 'macro') {
+            if (v > 5) v = 5;
+            if (v < 1) v = 1;
+            document.getElementById('magValue').innerText = v.toFixed(1) + 'x';
+            if (magSlider) {
+                magSlider.value = v.toFixed(1);
+            }
+        } else {
+            if (v < 2) v = 2;
+            if (v > 100) v = 100;
+            document.getElementById('magValue').innerText = Math.round(v) + 'x';
+            if (magSelect) {
+                magSelect.value = Math.round(v).toString();
+            }
+        }
         sendCommand('G' + v.toFixed(2));
+        saveSettings();
     }
 
     function updateApertureFromUI() {
@@ -447,6 +555,7 @@
             let na = 1.0 / (2.0 * ap);
             document.getElementById('inputNA').value = na.toFixed(3);
             sendAperture(ap);
+            saveSettings();
         }
     }
 
@@ -454,6 +563,7 @@
         let na = parseFloat(document.getElementById('inputNA').value);
         if (na > 0) {
             sendAperture(na);
+            saveSettings();
         }
     }
 
@@ -466,6 +576,7 @@
         if (val < 0) val = 0;
         let ms = Math.round(val * 1000);
         sendCommand('T' + ms);
+        saveSettings();
     }
 
     function sendPassword() {
